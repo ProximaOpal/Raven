@@ -1,0 +1,47 @@
+# ── Core Framework ────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart
+
+# ── Database ──────────────────────────────────────────────────────
+sqlalchemy
+aiosqlite
+asyncpg
+alembic
+
+# ── Config & Validation ───────────────────────────────────────────
+pydantic
+pydantic-settings
+python-dotenv
+
+# ── AI / ML ───────────────────────────────────────────────────────
+dashscope
+ultralytics
+opencv-python-headless
+
+# ── Async HTTP ────────────────────────────────────────────────────
+httpx
+
+# ── Task Queue ────────────────────────────────────────────────────
+celery
+redis
+
+# ── Notifications ─────────────────────────────────────────────────
+twilio
+sendgrid
+
+# ── PDF / Evidence ────────────────────────────────────────────────
+weasyprint
+jinja2
+Pillow
+
+# ── Auth ──────────────────────────────────────────────────────────
+python-jose[cryptography]
+bcrypt
+
+# ── Cloud Storage ─────────────────────────────────────────────────
+oss2
+
+# ── Utilities ─────────────────────────────────────────────────────
+python-dateutil
+numpy

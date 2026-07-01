@@ -1,0 +1,48 @@
+# NEXUS CCTV — 30-Minute Heartbeat Workflow
+# File: .agent/workflows/heartbeat.yml
+
+name: SOC Heartbeat & Digest
+description: "Monitors camera health, pings telemetry streams, and compiles daily trajectory summaries."
+schedule: "*/30 * * * *" # Trigger every 30 minutes
+
+on:
+  timer:
+    interval: 30m
+
+steps:
+  - name: verify_camera_health
+    action: call_mcp_tool
+    server: camera_ingest_mcp
+    tool: check_streams_status
+    output_key: camera_status
+
+  - name: collect_recent_events
+    action: db_query
+    query: "SELECT * FROM incidents WHERE timestamp >= datetime('now', '-30 minutes') ORDER BY timestamp DESC;"
+    output_key: recent_incidents
+
+  - name: analyze_security_trajectories
+    action: compile_trajectories
+    data: "{{ recent_incidents }}"
+    output_key: trajectory_summary
+
+  - name: generate_bilingual_digest
+    action: call_agent
+    agent: Planner
+    instruction: |
+      Compile a bilingual Kiswahili-English forensic digest summarizing the last 30 minutes of SOC activity.
+      If any camera status is offline, highlight it immediately in both languages.
+      Format:
+      - ENGLISH: [Summary details]
+      - KISWAHILI: [Muhtasari wa maelezo]
+    output_key: bilingual_summary
+
+  - name: post_to_soc_dashboard
+    action: call_mcp_tool
+    server: websocket_mcp
+    tool: broadcast_event
+    payload:
+      event: "soc_heartbeat"
+      data:
+        camera_status: "{{ camera_status }}"
+        digest: "{{ bilingual_summary }}"

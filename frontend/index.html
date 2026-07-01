@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NEXUS CCTV — SOC Autopilot Operations</title>
+  <meta name="description" content="NEXUS CCTV - Autonomous AI-powered Security Operations Center (SOC) dashboard. Features real-time visual threat analysis, Qwen-VL analysis, multi-camera BEV homography trajectories, cryptographically hash-chained audit logs, and RF/Wi-Fi spatial intelligence device-free human mapping.">
+  <!-- Leaflet.js CSS for airport map -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <!-- Chart.js for threat activity heatmap and RF sensing -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Leaflet.js for interactive airport map -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Design System CSS -->
+  <link rel="stylesheet" href="/static/style.css">
+
+  <!-- Inline SVG icon definitions (reusable symbols, no CDN needed) -->
+  <svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <!-- Camera -->
+      <symbol id="ico-camera" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="3" y="3" width="18" height="18" rx="1"/>
+        <circle cx="12" cy="12" r="5"/>
+        <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
+      </symbol>
+      <!-- Grid / Dashboard -->
+      <symbol id="ico-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="3" y="3" width="7" height="7" rx="0.5"/>
+        <rect x="14" y="3" width="7" height="7" rx="0.5"/>
+        <rect x="3" y="14" width="7" height="7" rx="0.5"/>
+        <rect x="14" y="14" width="7" height="7" rx="0.5"/>
+      </symbol>
+      <!-- Ledger / List -->
+      <symbol id="ico-ledger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="3" y="4" width="18" height="4" rx="0.5"/>
+        <rect x="3" y="10" width="18" height="4" rx="0.5"/>
+        <rect x="3" y="16" width="18" height="4" rx="0.5"/>
+      </symbol>
+      <!-- RF / Waveform -->
+      <symbol id="ico-rf" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12h3l3-9 4 18 3-12h5"/>
+      </symbol>
+      <!-- Biometrics / Sliders -->
+      <symbol id="ico-bio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
+        <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
+        <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
+        <line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>
+      </symbol>
+      <!-- Globe -->
+      <symbol id="ico-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+      </symbol>
+      <!-- Bell -->
+      <symbol id="ico-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      </symbol>
+      <!-- Chevron down -->
+      <symbol id="ico-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="6 9 12 15 18 9"/>
+      </symbol>
+      <!-- Three dots / more -->
+      <symbol id="ico-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>
+      </symbol>
+      <!-- X close -->
+      <symbol id="ico-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </symbol>
+      <!-- Search -->
+      <symbol id="ico-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+      </symbol>
+      <!-- Layers / 3D -->
+      <symbol id="ico-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+      </symbol>
+      <!-- Analytics / Chart -->
+      <symbol id="ico-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M3 3v18h18M18.7 8l-5.1 5.2-2.8-2.7-4.8 4.8"/>
+      </symbol>
+      <!-- Sliders -->
+      <symbol id="ico-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>
+      </symbol>
+      <!-- Expand / Maximize -->
+      <symbol id="ico-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+      </symbol>
+      <!-- Diamond (hazardous) -->
+      <symbol id="ico-diamond" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 2L2 12l10 10 10-10L12 2z"/>
+      </symbol>
+      <!-- Warning triangle (interruption) -->
+      <symbol id="ico-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+      </symbol>
+      <!-- Circle (info) -->
+      <symbol id="ico-circle" viewBox="0 0 24 24" fill="currentColor">
+        <circle cx="12" cy="12" r="6"/>
+      </symbol>
+      <!-- Check circle (approve) -->
+      <symbol id="ico-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/>
+      </symbol>
+      <!-- X circle (reject) -->
+      <symbol id="ico-xcircle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+      </symbol>
+      <!-- Phone / Escalate -->
+      <symbol id="ico-phone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.81a19.79 19.79 0 01-3.07-8.68A2 2 0 012.18 1h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.91 8.15a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/>
+      </symbol>
+      <!-- Shield / HITL -->
+      <symbol id="ico-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </symbol>
+      <!-- Chip / AI -->
+      <symbol id="ico-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="7" y="7" width="10" height="10" rx="1"/>
+        <path d="M9 7V3M12 7V3M15 7V3M9 21v-4M12 21v-4M15 21v-4M3 9h4M3 12h4M3 15h4M17 9h4M17 12h4M17 15h4"/>
+      </symbol>
+      <!-- Folder -->
+      <symbol id="ico-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+      </symbol>
+      <!-- Magnify -->
+      <symbol id="ico-magnify" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+      </symbol>
+      <!-- Bar chart -->
+      <symbol id="ico-bar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="18" y="3" width="3" height="18"/><rect x="10.5" y="8" width="3" height="13"/><rect x="3" y="12" width="3" height="9"/>
+      </symbol>
+      <!-- Database -->
+      <symbol id="ico-db" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+      </symbol>
+      <!-- Signal / RF -->
+      <symbol id="ico-signal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M1.9 8.4a14 14 0 0120.2 0M5.5 12a10 10 0 0113 0M9.1 15.6a6 6 0 015.8 0"/>
+        <circle cx="12" cy="19" r="1" fill="currentColor"/>
+      </symbol>
+      <!-- User plus -->
+      <symbol id="ico-user-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>
+        <line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/>
+      </symbol>
+      <!-- Users -->
+      <symbol id="ico-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/>
+        <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+      </symbol>
+      <!-- Face scan -->
+      <symbol id="ico-face" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <path d="M3 8V5a2 2 0 012-2h3M16 3h3a2 2 0 012 2v3M21 16v3a2 2 0 01-2 2h-3M8 21H5a2 2 0 01-2-2v-3"/>
+        <circle cx="12" cy="12" r="3"/><path d="M9.5 12a2.5 2.5 0 005 0"/>
+      </symbol>
+      <!-- Fingerprint -->
+      <symbol id="ico-fingerprint" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <path d="M2 12C2 6.5 6.5 2 12 2a10 10 0 0110 10c0 1.4-.3 2.8-.8 4"/>
+        <path d="M5 12a7 7 0 0114 0c0 2-.5 3.8-1.4 5.4"/>
+        <path d="M8 12a4 4 0 018 0c0 1.2-.3 2.4-.8 3.4"/>
+        <path d="M12 12v.01"/>
+      </symbol>
+      <!-- Clipboard check -->
+      <symbol id="ico-clipcheck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/>
+        <rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12l2 2 4-4"/>
+      </symbol>
+      <!-- Spin circle (loading) -->
+      <symbol id="ico-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" opacity="0.25"/>
+        <path d="M21 12a9 9 0 01-9 9" stroke-linecap="round"/>
+      </symbol>
+      <!-- File PDF -->
+      <symbol id="ico-pdf" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="12" y2="17"/>
+      </symbol>
+      <!-- File zip -->
+      <symbol id="ico-zip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/>
+      </symbol>
+      <!-- Sort arrows -->
+      <symbol id="ico-sort" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M7 15l5 5 5-5M7 9l5-5 5 5"/>
+      </symbol>
+      <!-- Tower broadcast -->
+      <symbol id="ico-tower" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <path d="M12 12l-2-2M12 12l2 2M12 12V3M5.6 5.6A9 9 0 0118.4 5.6M3.1 3.1A13 13 0 0120.9 3.1"/>
+        <line x1="12" y1="12" x2="12" y2="21"/>
+        <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
+      </symbol>
+      <!-- Danger triangle filled -->
+      <symbol id="ico-danger" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+      </symbol>
+      <!-- Walkie talkie -->
+      <symbol id="ico-walkie" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <rect x="7" y="5" width="10" height="16" rx="2"/>
+        <path d="M9 1h6M11 9h2M7 5V3a1 1 0 011-1h8a1 1 0 011 1v2"/>
+      </symbol>
+    </defs>
+  </svg>
+</head>
+<body>
+
+  <!-- ── LEFT NAVIGATION SIDEBAR ───────────────────────────────────── -->
+  <aside id="sidebar-nav">
+    <div class="sidebar-logo">CLOUDS</div>
+    
+    <nav class="nav-menu">
+      <div class="nav-item" id="nav-btn-camera" data-tooltip="Tactical Camera Grid">
+        <svg class="sidebar-icon"><use href="#ico-camera"/></svg>
+        <span id="nav-pending-count" class="nav-badge" style="display:none;">0</span>
+      </div>
+      <div class="nav-item active" id="nav-btn-dashboard" data-tooltip="3D Cloud Dashboard">
+        <svg class="sidebar-icon"><use href="#ico-grid"/></svg>
+      </div>
+      <div class="nav-item" id="nav-btn-ledger" data-tooltip="Incident Ledger &amp; Search">
+        <svg class="sidebar-icon"><use href="#ico-ledger"/></svg>
+      </div>
+      <div class="nav-item" id="nav-btn-rf" data-tooltip="RF Spatial Sensing">
+        <svg class="sidebar-icon"><use href="#ico-rf"/></svg>
+      </div>
+    </nav>
+
+    <div class="nav-bottom">
+      <div class="nav-item" id="nav-btn-biometrics" data-tooltip="Biometrics Registry">
+        <svg class="sidebar-icon"><use href="#ico-bio"/></svg>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── TOP HEADER ────────────────────────────────────────────────── -->
+  <header id="top-header">
+    <div class="header-left">
+      <div class="status-badge">
+        <span class="status-dot"></span>
+        <span>OPERATIONAL</span>
+      </div>
+      <div class="ticker-text">Time delay tracking: All objects: 0.5s</div>
+      
+      <!-- WebSocket / Connected Status -->
+      <div id="ws-status" class="ws-status-badge">
+        <span id="ws-dot" class="ws-dot disconnected"></span>
+        <span id="ws-text">DISCONNECTED</span>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <!-- Verify Audit Trigger (Globe SVG) -->
+      <button class="header-icon-btn" id="btn-verify-audit" title="Verify Audit Logs">
+        <svg class="hdr-ico"><use href="#ico-globe"/></svg>
+      </button>
+
+      <!-- Notifications Bell SVG -->
+      <button class="header-icon-btn" title="Notifications">
+        <svg class="hdr-ico"><use href="#ico-bell"/></svg>
+        <span class="icon-badge"></span>
+      </button>
+
+      <!-- User Profile -->
+      <div class="user-profile">
+        <span class="user-name">Christopher Summer</span>
+        <div class="user-avatar-fallback">CS</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── MAIN CONTENT CONTAINER ────────────────────────────────────── -->
+  <main id="main-container">
+
+    <!-- ── SECTION 1: 3D CLOUD DASHBOARD ─────────────────────────── -->
+    <section class="view-section active" id="view-dashboard">
+      <div class="dashboard-grid">
+        
+        <!-- Left Column -->
+        <div class="dashboard-left">
+          
+          <!-- Main CCTV / Point Cloud Card -->
+          <div class="panel-card cloud-panel">
+            <div class="card-header">
+              <div class="card-title">
+                3D Cloud
+                <span class="card-action-link" style="margin-left: 15px;">Export</span>
+                <span class="card-action-link" style="margin-left: 10px;">Share</span>
+                <span class="card-action-link" style="margin-left: 10px;">Support</span>
+              </div>
+              <div class="card-actions">
+                <div class="header-glass-toolbar">
+                  <button class="card-action-icon" title="Search">
+                    <svg class="toolbar-ico"><use href="#ico-search"/></svg>
+                  </button>
+                  <button class="card-action-icon" title="3D View">
+                    <svg class="toolbar-ico"><use href="#ico-layers"/></svg>
+                  </button>
+                  <button class="card-action-icon" id="btn-cloud-layers" title="Layers">
+                    <svg class="toolbar-ico"><use href="#ico-sliders"/></svg>
+                  </button>
+                  <button class="card-action-icon" title="Analytics">
+                    <svg class="toolbar-ico"><use href="#ico-chart"/></svg>
+                  </button>
+                  <button class="card-action-icon" title="Filters">
+                    <svg class="toolbar-ico"><use href="#ico-bio"/></svg>
+                  </button>
+                  <button class="card-action-icon" title="Maximize">
+                    <svg class="toolbar-ico"><use href="#ico-expand"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="card-body" style="padding: 0;">
+              <div class="cctv-feed-container">
+                <!-- Video element ready for live stream -->
+                <video id="main-cctv-video" style="display:none; width:100%; height:100%; object-fit:cover; position:absolute; inset:0;" playsinline muted></video>
+
+                <!-- Placeholder shown until a stream connects -->
+                <div class="cctv-placeholder" id="cctv-placeholder">
+                  <div class="cctv-corner cctv-tl"></div>
+                  <div class="cctv-corner cctv-tr"></div>
+                  <div class="cctv-corner cctv-bl"></div>
+                  <div class="cctv-corner cctv-br"></div>
+                  <div class="cctv-scan-line"></div>
+                  <div class="cctv-placeholder-inner">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width: 2.2rem; height: 2.2rem; margin-bottom: 8px; opacity: 0.5;">
+                      <path d="M23 7l-7 5 7 5V7z"/>
+                      <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+                    </svg>
+                    <div class="cctv-no-title">Awaiting Video Stream</div>
+                    <div class="cctv-no-sub">Connect a camera source to begin streaming</div>
+                  </div>
+                  <div class="cloud-footer-label" id="cloud-point-label">4 569 900 points generated in 1.4s</div>
+                </div>
+
+                <div class="cloud-dropdown" id="cloud-layers-dropdown">
+                  <div class="dropdown-item">Point quality <span class="val">High</span></div>
+                  <div class="dropdown-item">Lighting <span class="val">All</span></div>
+                  <div class="dropdown-item">Layers <span class="val">All</span></div>
+                  <div class="dropdown-item">Textures <span class="val">Low</span></div>
+                  <div class="dropdown-item">Background <span class="val">Dark</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bottom Row: Map + Activity -->
+          <div class="dashboard-bottom-row">
+            
+            <!-- Airport Map Card -->
+            <div class="panel-card">
+              <div class="card-header">
+                <div class="card-title">Airport map</div>
+                <div class="card-actions">
+                  <button class="card-action-icon">
+                    <svg class="toolbar-ico"><use href="#ico-more"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="card-body" style="padding: 0; position: relative;">
+                <div id="leaflet-map"></div>
+                <div class="map-fallback-container" id="map-offline-fallback" style="display:none; width:100%; height:100%; position:relative; background:#0b141a;">
+                  <svg viewBox="0 0 400 180" style="width:100%; height:100%; display:block; opacity:0.85;">
+                    <defs><pattern id="grid-pattern" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(255,255,255,0.015)" stroke-width="1"/></pattern></defs>
+                    <rect width="100%" height="100%" fill="url(#grid-pattern)"/>
+                    <line x1="30" y1="40" x2="370" y2="40" stroke="#1d2a33" stroke-width="7" stroke-linecap="round"/>
+                    <line x1="60" y1="130" x2="340" y2="130" stroke="#1d2a33" stroke-width="7" stroke-linecap="round"/>
+                    <line x1="35" y1="40" x2="365" y2="40" stroke="rgba(255,255,255,0.1)" stroke-width="1" stroke-dasharray="4,4"/>
+                    <line x1="65" y1="130" x2="335" y2="130" stroke="rgba(255,255,255,0.1)" stroke-width="1" stroke-dasharray="4,4"/>
+                    <path d="M90 40 L130 85 L270 85 L310 40 M130 85 L150 130 M270 85 L250 130" fill="none" stroke="#152129" stroke-width="3"/>
+                    <rect x="150" y="70" width="100" height="30" fill="#142129" stroke="#253946" stroke-width="1.5"/>
+                    <circle cx="250" cy="70" r="4" fill="#e84055"/>
+                    <circle cx="250" cy="70" r="14" fill="none" stroke="#e84055" stroke-width="1.5"><animate attributeName="r" values="4;22;4" dur="2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.9;0;0.9" dur="2s" repeatCount="indefinite"/></circle>
+                    <g transform="translate(180, 48)"><rect width="118" height="15" fill="rgba(232, 64, 85, 0.9)" rx="2"/><text x="59" y="10" fill="#ffffff" font-family="Space Mono, monospace" font-size="8" font-weight="bold" text-anchor="middle">Proximity alert @ EPWA C1</text></g>
+                    <circle cx="100" cy="50" r="3" fill="#2ed573"/><circle cx="295" cy="115" r="3" fill="#2ed573"/><circle cx="85" cy="105" r="3" fill="#f1c40f"/><circle cx="210" cy="120" r="3" fill="#2ed573"/>
+                  </svg>
+                </div>
+                <div class="map-status-label">All aprons scanned</div>
+              </div>
+            </div>
+
+            <!-- Activity Feed -->
+            <div class="panel-card">
+              <div class="card-header">
+                <div class="card-title">Activity</div>
+                <div class="card-actions">
+                  <button class="card-action-icon">
+                    <svg class="toolbar-ico"><use href="#ico-more"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="card-body" style="padding: 0;">
+                <div class="activity-list" id="dashboard-activity-list">
+                  <!-- Fallback static items — replaced dynamically by app.js -->
+                  <div class="activity-item">
+                    <div class="activity-item-left">
+                      <span class="activity-icon-wrap hazardous">
+                        <svg class="act-ico" style="color:#f15b6c;"><use href="#ico-diamond"/></svg>
+                      </span>
+                      <span class="activity-text">Unauthorized Vehicle Access at <strong>CAM-03</strong></span>
+                    </div>
+                    <span class="activity-time">3 hours ago</span>
+                  </div>
+                  <div class="activity-item">
+                    <div class="activity-item-left">
+                      <span class="activity-icon-wrap interruption">
+                        <svg class="act-ico" style="color:#f1c40f;"><use href="#ico-warning"/></svg>
+                      </span>
+                      <span class="activity-text">Perimeter Fence Damage at <strong>CAM-04</strong></span>
+                    </div>
+                    <span class="activity-time">16/08/2025</span>
+                  </div>
+                  <div class="activity-item">
+                    <div class="activity-item-left">
+                      <span class="activity-icon-wrap info">
+                        <svg class="act-ico" style="color:#a29bfe;"><use href="#ico-circle"/></svg>
+                      </span>
+                      <span class="activity-text">Unauthorized Vehicle Access at <strong>CAM-02</strong></span>
+                    </div>
+                    <span class="activity-time">15/08/2025</span>
+                  </div>
+                  <div class="activity-item">
+                    <div class="activity-item-left">
+                      <span class="activity-icon-wrap interruption">
+                        <svg class="act-ico" style="color:#f1c40f;"><use href="#ico-warning"/></svg>
+                      </span>
+                      <span class="activity-text">Tailgating — Unauthorized Entry detected on <strong>CAM-01</strong></span>
+                    </div>
+                    <span class="activity-time">14/08/2025</span>
+                  </div>
+                  <div class="activity-item">
+                    <div class="activity-item-left">
+                      <span class="activity-icon-wrap info">
+                        <svg class="act-ico" style="color:#a29bfe;"><use href="#ico-circle"/></svg>
+                      </span>
+                      <span class="activity-text">Abandoned Object at <strong>CAM-02</strong></span>
+                    </div>
+                    <span class="activity-time">14/08/2025</span>
+                  </div>
+                  <div class="activity-item">
+                    <div class="activity-item-left">
+                      <span class="activity-icon-wrap hazardous">
+                        <svg class="act-ico" style="color:#f15b6c;"><use href="#ico-diamond"/></svg>
+                      </span>
+                      <span class="activity-text">Perimeter intrusion detected on <strong>CAM-01</strong></span>
+                    </div>
+                    <span class="activity-time">13/08/2025</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Right Column: Metadata & Weather -->
+        <div class="dashboard-right">
+          <!-- Dropdown Selector -->
+          <div class="dropdown-selector">
+            <span>WAW (Warsaw, Poland)</span>
+            <svg style="width:14px;height:14px;flex-shrink:0;"><use href="#ico-chevron-down"/></svg>
+          </div>
+
+          <!-- Stats 2×2 Grid -->
+          <div class="stats-grid-2x2">
+            <div class="stat-card-mini hazardous">
+              <div class="stat-card-top">
+                <span class="stat-value-mini" id="stat-hazardous">2</span>
+                <svg class="stat-icon-svg"><use href="#ico-diamond"/></svg>
+              </div>
+              <span class="stat-label-mini">Hazardous</span>
+            </div>
+            <div class="stat-card-mini unidentified">
+              <div class="stat-card-top">
+                <span class="stat-value-mini" id="stat-unidentified">5</span>
+                <svg class="stat-icon-svg"><use href="#ico-face"/></svg>
+              </div>
+              <span class="stat-label-mini">Unidentified</span>
+            </div>
+            <div class="stat-card-mini interruptions">
+              <div class="stat-card-top">
+                <span class="stat-value-mini" id="stat-interruptions">3</span>
+                <svg class="stat-icon-svg"><use href="#ico-danger"/></svg>
+              </div>
+              <span class="stat-label-mini">Interruptions</span>
+            </div>
+            <div class="stat-card-mini tracks">
+              <div class="stat-card-top">
+                <span class="stat-value-mini" id="stat-total-tracks">11</span>
+                <svg class="stat-icon-svg"><use href="#ico-signal"/></svg>
+              </div>
+              <span class="stat-label-mini">Total Tracks</span>
+            </div>
+          </div>
+
+          <!-- Metadata List -->
+          <div class="metadata-list">
+            <div class="metadata-item">
+              <span class="metadata-label">Name</span>
+              <span class="metadata-value" id="meta-val-name">Warsaw Frederic Chopin Airport</span>
+            </div>
+            <div class="metadata-item">
+              <span class="metadata-label">Operator</span>
+              <span class="metadata-value" id="meta-val-operator">Polish Airports State Enterprise (PPL)</span>
+            </div>
+            <div class="metadata-item">
+              <span class="metadata-label">Location</span>
+              <span class="metadata-value" id="meta-val-location">Okęcie, Warsaw, Poland</span>
+            </div>
+            <div class="metadata-item">
+              <span class="metadata-label">Elevation AMSL</span>
+              <span class="metadata-value" id="meta-val-elevation">110 m / 381 ft</span>
+            </div>
+            <div class="metadata-item">
+              <span class="metadata-label">Coordinates</span>
+              <span class="metadata-value mono" id="meta-val-coords">52°09'57"N 20°58'08"E</span>
+            </div>
+            <div class="metadata-item">
+              <span class="metadata-label">Time Zone</span>
+              <span class="metadata-value mono" id="meta-val-timezone">UTC +1</span>
+            </div>
+          </div>
+
+          <!-- Weather Block -->
+          <div class="weather-block">
+            <div class="weather-item">
+              <svg class="weather-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:20px;height:20px;color:var(--text-secondary);">
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+                <circle cx="12" cy="12" r="4"/>
+              </svg>
+              <div class="weather-info">
+                <span class="weather-temp" id="weather-val-temp">21 °C</span>
+                <span class="weather-desc">Scattered clouds</span>
+              </div>
+            </div>
+            <div class="weather-item">
+              <svg class="weather-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:20px;height:20px;color:var(--text-secondary);">
+                <path d="M9.59 4.59A2 2 0 1111 8H2m10.59 11.41A2 2 0 1014 16H2m15.73-8.27A2.5 2.5 0 1119.5 12H2"/>
+              </svg>
+              <div class="weather-info">
+                <span class="weather-temp" id="weather-val-wind">2 kt</span>
+                <span class="weather-desc">270° light winds</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Footer Info -->
+          <div class="right-sidebar-footer">
+            <div style="display:flex;flex-direction:column;gap:2px;">
+              <span>This information was last updated:</span>
+              <span style="font-family:'Space Mono',monospace;font-size:0.6rem;" id="meta-val-updated">Aug 21, 2018 at 2:00 PM GMT+02:00</span>
+            </div>
+            <button class="card-action-icon">
+              <svg class="toolbar-ico"><use href="#ico-more"/></svg>
+            </button>
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ── SECTION 2: LIVE TACTICAL CAMERA GRID & HITL ────────────────── -->
+    <section class="view-section" id="view-camera">
+      <div class="camera-view-container">
+        
+        <!-- Grid Header -->
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <svg style="width:18px;height:18px;color:var(--text-secondary);"><use href="#ico-tower"/></svg>
+            <h2 style="font-size:1.1rem;font-weight:600;text-transform:uppercase;letter-spacing:1px;">Live Tactical Camera Grid</h2>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button class="hitl-btn" id="btn-trigger-incident" style="background:rgba(241,91,108,0.1);border:1px solid rgba(241,91,108,0.3);color:var(--color-hazardous);padding:6px 12px;">
+              <svg style="width:13px;height:13px;display:inline;vertical-align:middle;margin-right:4px;"><use href="#ico-danger"/></svg> Inject Random Threat
+            </button>
+            <button class="hitl-btn" id="btn-trigger-normal" style="background:rgba(255,255,255,0.05);border:1px solid var(--border-color);color:var(--text-primary);padding:6px 12px;">
+              <svg style="width:13px;height:13px;display:inline;vertical-align:middle;margin-right:4px;"><use href="#ico-walkie"/></svg> Inject Normal Activity
+            </button>
+          </div>
+        </div>
+
+        <!-- 4-Up Grid -->
+        <div id="camera-grid">
+          <!-- Camera 1 -->
+          <div class="camera-tile" data-camera-id="1">
+            <img src="" alt="Main Gate Feed" class="camera-feed" id="feed-cam-1">
+            <canvas class="bbox-canvas" id="canvas-cam-1"></canvas>
+            <div class="camera-hud">
+              <div class="camera-name-tag">CAM-01 · Main Gate</div>
+              <div class="camera-time-tag" id="time-cam-1">00:00:00</div>
+              <div class="camera-status-tag">
+                <span class="cam-live-dot"></span>
+                <span class="cam-live-label">LIVE</span>
+              </div>
+              <div class="camera-alert-badge" id="badge-cam-1">CRITICAL</div>
+            </div>
+          </div>
+          <!-- Camera 2 -->
+          <div class="camera-tile" data-camera-id="2">
+            <img src="" alt="Parking Zone Feed" class="camera-feed" id="feed-cam-2">
+            <canvas class="bbox-canvas" id="canvas-cam-2"></canvas>
+            <div class="camera-hud">
+              <div class="camera-name-tag">CAM-02 · Parking Zone A</div>
+              <div class="camera-time-tag" id="time-cam-2">00:00:00</div>
+              <div class="camera-status-tag">
+                <span class="cam-live-dot"></span>
+                <span class="cam-live-label">LIVE</span>
+              </div>
+              <div class="camera-alert-badge" id="badge-cam-2">HIGH</div>
+            </div>
+          </div>
+          <!-- Camera 3 -->
+          <div class="camera-tile" data-camera-id="3">
+            <img src="" alt="Lobby CCTV Feed" class="camera-feed" id="feed-cam-3">
+            <canvas class="bbox-canvas" id="canvas-cam-3"></canvas>
+            <div class="camera-hud">
+              <div class="camera-name-tag">CAM-03 · Lobby Entrance</div>
+              <div class="camera-time-tag" id="time-cam-3">00:00:00</div>
+              <div class="camera-status-tag">
+                <span class="cam-live-dot"></span>
+                <span class="cam-live-label">LIVE</span>
+              </div>
+              <div class="camera-alert-badge" id="badge-cam-3">MEDIUM</div>
+            </div>
+          </div>
+          <!-- Camera 4 -->
+          <div class="camera-tile" data-camera-id="4">
+            <img src="" alt="Server Room Feed" class="camera-feed" id="feed-cam-4">
+            <canvas class="bbox-canvas" id="canvas-cam-4"></canvas>
+            <div class="camera-hud">
+              <div class="camera-name-tag">CAM-04 · Server Room B2</div>
+              <div class="camera-time-tag" id="time-cam-4">00:00:00</div>
+              <div class="camera-status-tag">
+                <span class="cam-live-dot"></span>
+                <span class="cam-live-label">LIVE</span>
+              </div>
+              <div class="camera-alert-badge" id="badge-cam-4">CRITICAL</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- HITL Panel -->
+        <div class="panel-card" id="hitl-panel">
+          <div class="card-header" style="background:var(--bg-side);">
+            <div class="card-title" style="color:var(--color-hazardous);">
+              <svg style="width:14px;height:14px;"><use href="#ico-shield"/></svg>
+              Autopilot Threat Review Panel · HITL Validation
+            </div>
+            <div class="card-actions">
+              <button class="card-action-icon" id="hitl-close">
+                <svg style="width:14px;height:14px;"><use href="#ico-x"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="hitl-container">
+              <!-- Left Side: Image Snapshot & Canvas -->
+              <div class="hitl-left">
+                <div class="hitl-snapshot-wrapper">
+                  <img src="" alt="Incident Frame" class="hitl-snapshot" id="hitl-image">
+                  <canvas class="bbox-canvas" id="canvas-hitl"></canvas>
+                </div>
+                <div class="hitl-meta-grid">
+                  <span class="hitl-meta-label">Camera ID:</span>
+                  <span class="hitl-meta-value" id="hitl-val-camera">CAM-01 · Main Gate</span>
+                  
+                  <span class="hitl-meta-label">Location:</span>
+                  <span class="hitl-meta-value" id="hitl-val-location">North Perimeter Gate</span>
+
+                  <span class="hitl-meta-label">Detection Time:</span>
+                  <span class="hitl-meta-value" id="hitl-val-time">2026-06-15 21:03:24 UTC</span>
+
+                  <span class="hitl-meta-label">Threat Type:</span>
+                  <span class="hitl-meta-value" id="hitl-val-threat" style="color:var(--color-hazardous);">Perimeter Intrusion</span>
+
+                  <span class="hitl-meta-label">Confidence:</span>
+                  <span class="hitl-meta-value" id="hitl-val-confidence">94%</span>
+                </div>
+              </div>
+
+              <!-- Right Side: AI Reasoning & Reports -->
+              <div class="hitl-right">
+                <div class="hitl-ai-box">
+                  <h4>
+                    <svg style="width:13px;height:13px;display:inline;vertical-align:middle;margin-right:4px;"><use href="#ico-chip"/></svg>
+                    Qwen-VL Reasoning Analysis <span class="ai-badge">qwen-vl-max</span>
+                  </h4>
+                  <p class="hitl-ai-text" id="hitl-reasoning">Analyzing scene frame details...</p>
+                </div>
+
+                <div>
+                  <div class="hitl-report-tabs">
+                    <div class="report-tab active" id="tab-en">ENGLISH INCIDENT REPORT</div>
+                    <div class="report-tab" id="tab-sw">RIPOTI YA KISWAHILI</div>
+                  </div>
+                  <div id="hitl-report-text">Report loading...</div>
+                </div>
+
+                <div class="hitl-hash-box" id="hitl-evidence-sec">
+                  <div style="font-weight:700;margin-bottom:4px;font-size:0.6rem;letter-spacing:1px;color:var(--text-muted);">FORENSIC INTEGRITY SIGNATURE</div>
+                  <span id="hitl-hash-value" style="font-family:'Space Mono',monospace;font-size:0.7rem;color:var(--color-unidentified);">Calculating sha-256...</span>
+                </div>
+
+                <div>
+                  <label class="hitl-notes-label" for="hitl-notes">SOC Verification Notes</label>
+                  <textarea id="hitl-notes" placeholder="Enter dispatch log notes or false-positive rationale..."></textarea>
+                </div>
+
+                <div class="hitl-actions">
+                  <button class="hitl-btn" id="btn-approve">
+                    <svg style="width:13px;height:13px;display:inline;vertical-align:middle;margin-right:4px;"><use href="#ico-check"/></svg> APPROVE
+                  </button>
+                  <button class="hitl-btn" id="btn-reject">
+                    <svg style="width:13px;height:13px;display:inline;vertical-align:middle;margin-right:4px;"><use href="#ico-xcircle"/></svg> REJECT
+                  </button>
+                  <button class="hitl-btn" id="btn-escalate">
+                    <svg style="width:13px;height:13px;display:inline;vertical-align:middle;margin-right:4px;"><use href="#ico-phone"/></svg> ESCALATE
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Evidence Downloads Panel -->
+        <div class="panel-card" id="evidence-panel">
+          <div class="card-header">
+            <div class="card-title">
+              <svg style="width:14px;height:14px;color:var(--color-blue);"><use href="#ico-folder"/></svg>
+              Forensic Chain of Custody Archive
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="evidence-container">
+              <div style="font-size:0.8rem;color:var(--text-secondary);">An official security incident package has been sealed and hashed. Tampering invalidates the signature.</div>
+              <div class="evidence-hash" id="evidence-hash-box">SHA-256: 3a28c8de84092b7713d09a250325bb1b2e88a032d88737ffde0117a2245b0851</div>
+              <div class="evidence-actions">
+                <a href="#" class="evidence-btn" id="btn-download-pdf" target="_blank">
+                  <svg style="width:13px;height:13px;display:inline;vertical-align:middle;margin-right:4px;"><use href="#ico-pdf"/></svg> Download Incident PDF
+                </a>
+                <a href="#" class="evidence-btn" id="btn-download-zip" style="background:rgba(123,97,255,0.1);border-color:rgba(123,97,255,0.3);color:var(--color-unidentified);" target="_blank">
+                  <svg style="width:13px;height:13px;display:inline;vertical-align:middle;margin-right:4px;"><use href="#ico-zip"/></svg> Download Forensic ZIP
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ── SECTION 3: INCIDENT LEDGER & SEMANTIC SEARCH ─────────────── -->
+    <section class="view-section" id="view-ledger">
+      <div class="ledger-view-container">
+        
+        <!-- Search Card -->
+        <div class="panel-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg style="width:14px;height:14px;color:var(--color-accent);"><use href="#ico-magnify"/></svg>
+              Qwen-Plus Semantic Search
+              <span style="font-family:'Space Mono',monospace;font-size:0.6rem;background:rgba(123,97,255,0.1);border:1px solid rgba(123,97,255,0.25);color:var(--color-accent);padding:2px 6px;margin-left:10px;">Natural Language → SQL Autopilot</span>
+            </div>
+          </div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:15px;">
+            <div class="search-input-row">
+              <input type="text" id="search-input" class="search-field" placeholder="e.g. Find all critical incidents on CAM-01 involving people at night">
+              <button id="search-btn" class="search-btn">Semantic Query</button>
+            </div>
+            
+            <div class="search-pills">
+              <div class="search-pill" data-query="Show me all critical intrusions at night">"Critical intrusions at night"</div>
+              <div class="search-pill" data-query="List any unauthorized vehicles parking in zone A">"Vehicles parked in Zone A"</div>
+              <div class="search-pill" data-query="Were there any lobby disturbances during the afternoon?">"Lobby disturbances"</div>
+              <div class="search-pill" data-query="Display all incidents with low severity in the database">"Low severity incidents"</div>
+            </div>
+
+            <div class="search-sql-tag" id="search-sql-preview">
+              Generated Query: <code id="search-sql-code">SELECT * FROM incidents WHERE ...</code>
+            </div>
+
+            <div id="search-results-grid"></div>
+          </div>
+        </div>
+
+        <!-- Heatmap Card -->
+        <div class="panel-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg style="width:14px;height:14px;color:var(--text-secondary);"><use href="#ico-bar"/></svg>
+              Incident Heatmap · Hourly Threats
+            </div>
+          </div>
+          <div class="card-body" style="height:180px;">
+            <canvas id="threat-heatmap" style="width:100%;height:100%;"></canvas>
+          </div>
+        </div>
+
+        <!-- Ledger Table Card -->
+        <div class="panel-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg style="width:14px;height:14px;color:var(--text-secondary);"><use href="#ico-db"/></svg>
+              Incident Ledger
+            </div>
+          </div>
+          <div class="card-body" style="padding:0;">
+            <div class="table-container">
+              <table class="ledger-table" id="incidents-table">
+                <thead>
+                  <tr>
+                    <th id="th-id">ID <svg style="width:10px;height:10px;display:inline;"><use href="#ico-sort"/></svg></th>
+                    <th id="th-time">Timestamp <svg style="width:10px;height:10px;display:inline;"><use href="#ico-sort"/></svg></th>
+                    <th id="th-camera">Camera <svg style="width:10px;height:10px;display:inline;"><use href="#ico-sort"/></svg></th>
+                    <th id="th-threat">Threat Category</th>
+                    <th id="th-severity">Severity</th>
+                    <th id="th-confidence">Conf</th>
+                    <th id="th-status">Status</th>
+                    <th id="th-actions">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="incidents-table-body">
+                  <!-- Rendered dynamically by app.js -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ── SECTION 4: RF SPATIAL SENSING ────────────────────────────── -->
+    <section class="view-section" id="view-rf">
+      <div class="rf-view-container">
+        
+        <div class="panel-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg style="width:14px;height:14px;color:var(--color-blue);"><use href="#ico-signal"/></svg>
+              Real-Time Access Point Co-Channel RSSI
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="rf-chart-wrapper">
+              <canvas id="rf-signal-chart" style="width:100%;height:100%;"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg style="width:14px;height:14px;color:var(--text-secondary);"><use href="#ico-chip"/></svg>
+              AP Telemetry &amp; CSI Variance
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="ap-list" id="rf-ap-list">
+              <!-- Rendered dynamically by app.js -->
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ── SECTION 5: BIOMETRICS HUB ────────────────────────────────── -->
+    <section class="view-section" id="view-biometrics">
+      <div class="biometrics-view-container">
+        
+        <!-- Face Enrollment Form -->
+        <div class="panel-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg style="width:14px;height:14px;"><use href="#ico-user-plus"/></svg>
+              Enroll Face Reference
+            </div>
+          </div>
+          <div class="card-body">
+            <form id="bio-enroll-form" class="bio-form">
+              <div class="form-group">
+                <label for="bio-name" class="form-label">Full Name</label>
+                <input type="text" id="bio-name" class="form-input" required placeholder="e.g., Jane Miller">
+              </div>
+              <div class="form-group">
+                <label for="bio-role" class="form-label">Access Authorization Role</label>
+                <select id="bio-role" class="form-select">
+                  <option value="Operator">SOC Operator</option>
+                  <option value="Staff">Authorized Staff</option>
+                  <option value="VIP">Authorized Visitor / VIP</option>
+                  <option value="Blacklisted">Blacklisted / Alert Trigger</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="bio-photo" class="form-label">Reference Portrait Photo</label>
+                <input type="file" id="bio-photo" class="form-input" required accept="image/*" style="padding:6px;">
+              </div>
+              <button type="submit" class="hitl-btn" style="background:var(--color-accent);color:#fff;width:100%;margin-top:10px;">
+                <svg style="width:13px;height:13px;display:inline;vertical-align:middle;margin-right:4px;"><use href="#ico-fingerprint"/></svg>
+                Scan &amp; Enroll Face
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Identity Registry -->
+        <div class="panel-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg style="width:14px;height:14px;"><use href="#ico-users"/></svg>
+              Identity Registry
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="bio-registry-list" class="bio-list-container">
+              <div style="color:var(--text-muted);font-size:0.8rem;text-align:center;padding-top:20px;">No enrolled identities found.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Real-Time Matches Log -->
+        <div class="panel-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg style="width:14px;height:14px;"><use href="#ico-face"/></svg>
+              Real-Time Matches
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="bio-matches-list" class="bio-list-container">
+              <div data-placeholder style="color:var(--text-muted);font-size:0.8rem;text-align:center;padding-top:20px;">No matches detected.</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── AUDIT TRAIL VERIFICATION MODAL ────────────────────────────── -->
+  <div id="audit-modal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">
+          <svg style="width:16px;height:16px;color:var(--color-green);"><use href="#ico-clipcheck"/></svg>
+          <span>Cryptographic Audit Verification</span>
+        </div>
+        <button id="audit-modal-close" class="modal-close-btn">
+          <svg style="width:14px;height:14px;"><use href="#ico-x"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="audit-status-banner" id="audit-banner">
+          <svg class="spin-icon" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:6px;"><use href="#ico-spin"/></svg>
+          Initializing verification...
+        </div>
+        <div style="font-size:0.8rem;display:flex;flex-direction:column;gap:10px;background:rgba(0,0,0,0.15);padding:15px;border-radius:6px;border:1px solid var(--border-color);">
+          <div><strong>Chain Link Verification:</strong> <span id="audit-db-status">Pending</span></div>
+          <div><strong>Log Records Scanned:</strong> <span id="audit-chain-len">0</span></div>
+          <div style="word-break:break-all;"><strong>Latest Hash Block:</strong> <code id="audit-latest-hash" style="font-family:'Space Mono',monospace;color:var(--color-unidentified);">N/A</code></div>
+        </div>
+        <h4 style="font-family:'Space Mono',monospace;font-size:0.75rem;margin-top:5px;">Verification Engine Logs:</h4>
+        <pre id="audit-logs-output" style="background:#0b1013;color:var(--color-green);font-family:'Space Mono',monospace;font-size:0.75rem;padding:12px;border-radius:6px;max-height:130px;overflow-y:auto;white-space:pre-wrap;border:1px solid var(--border-color);"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Stack -->
+  <div id="toast-container"></div>
+
+  <!-- Javascript Logic Modules -->
+  <script src="/static/camera-mock.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
