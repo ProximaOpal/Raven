@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — WebSocket Router
+Raven AI CCTV — WebSocket Router
 WS /ws/soc — Real-time SOC dashboard push
 """
 import logging

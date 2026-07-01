@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Auth Utilities (JWT)
+Raven AI CCTV — Auth Utilities (JWT)
 """
 import logging
 import bcrypt

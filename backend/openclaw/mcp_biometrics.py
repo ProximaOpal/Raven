@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Biometric Matcher MCP Server
+Raven AI CCTV — Biometric Matcher MCP Server
 Exposes face detection and identification tool.
 """
 import sys

@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — OpenClaw WebSocket Gateway Bridge
+Raven AI CCTV — OpenClaw WebSocket Gateway Bridge
 Connects to ws://127.0.0.1:18789, authenticates, and routes triggers to AgentX pipeline.
 """
 import json

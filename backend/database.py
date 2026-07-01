@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Database Engine & Session Factory
+Raven AI CCTV — Database Engine & Session Factory
 Supports SQLite (dev) and PostgreSQL (prod) via DATABASE_URL.
 """
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker

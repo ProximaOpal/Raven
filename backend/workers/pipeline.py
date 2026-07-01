@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Celery Pipeline Workers
+Raven AI CCTV — Celery Pipeline Workers
 Background tasks: frame processing, Qwen analysis, alert dispatch.
 """
 import asyncio
@@ -16,7 +16,7 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 celery_app = Celery(
-    "nexus",
+    "raven",
     broker=settings.redis_url,
     backend=settings.redis_url,
     include=["backend.workers.pipeline"],
@@ -43,7 +43,7 @@ def run_async(coro):
         loop.close()
 
 
-@celery_app.task(name="nexus.process_frame", bind=True, max_retries=2)
+@celery_app.task(name="raven.process_frame", bind=True, max_retries=2)
 def process_frame(self, camera_id: int, image_b64: str):
     """
     Delegate CCTV frame processing to the AgentX OpenClaw Agentic Runtime.

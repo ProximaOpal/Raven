@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — YOLO Filter MCP Server
+Raven AI CCTV — YOLO Filter MCP Server
 Exposes the object pre-filter tool for OpenClaw.
 """
 import sys

@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Qwen-VL-Max Integration
+Raven AI CCTV — Qwen-VL-Max Integration
 Analyzes video frames for threat classification.
 Falls back to mock data in DEMO_MODE or on quota errors.
 """
@@ -106,7 +106,7 @@ MOCK_ANALYSES: list[dict] = [
 
 # ─── System Prompt ───────────────────────────────────────────────────────────
 
-THREAT_ANALYSIS_PROMPT = """You are NEXUS-VL, an expert AI security analyst reviewing CCTV footage.
+THREAT_ANALYSIS_PROMPT = """You are Raven AI-VL, an expert AI security analyst reviewing CCTV footage.
 
 Analyze the provided image and return a structured threat assessment in valid JSON format.
 

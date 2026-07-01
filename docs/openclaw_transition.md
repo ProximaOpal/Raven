@@ -1,6 +1,6 @@
 # OpenClaw Agentic Runtime & MCP Transition Specification
 
-This document details the architectural blueprint for transitioning the NEXUS CCTV project from a Celery-based task queue to a multi-layered OpenClaw agentic runtime.
+This document details the architectural blueprint for transitioning the Raven AI CCTV project from a Celery-based task queue to a multi-layered OpenClaw agentic runtime.
 
 ---
 

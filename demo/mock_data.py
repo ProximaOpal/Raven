@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Demo Data Seeder
+Raven AI CCTV — Demo Data Seeder
 Populates the database with 4 cameras and 10 realistic incidents.
 Run: python demo/mock_data.py
 """
@@ -146,7 +146,7 @@ MOCK_INCIDENTS = [
 ]
 
 REPORTS_EN = {
-    SeverityLevel.CRITICAL: "EXECUTIVE SUMMARY\nA critical security event was detected and automatically recorded by the NEXUS AI surveillance system. Immediate SOC review and physical response are warranted.\n\nDETAILED OBSERVATIONS\nThe AI analysis identified the described threat with high confidence. All relevant scene context has been captured and logged.\n\nRECOMMENDED ACTIONS\n1. Dispatch security personnel immediately\n2. Secure the affected zone\n3. Preserve CCTV footage for forensic review\n\nLEGAL NOTES\nSHA-256 signed evidence package generated. Chain of custody intact.",
+    SeverityLevel.CRITICAL: "EXECUTIVE SUMMARY\nA critical security event was detected and automatically recorded by the Raven AI AI surveillance system. Immediate SOC review and physical response are warranted.\n\nDETAILED OBSERVATIONS\nThe AI analysis identified the described threat with high confidence. All relevant scene context has been captured and logged.\n\nRECOMMENDED ACTIONS\n1. Dispatch security personnel immediately\n2. Secure the affected zone\n3. Preserve CCTV footage for forensic review\n\nLEGAL NOTES\nSHA-256 signed evidence package generated. Chain of custody intact.",
     SeverityLevel.HIGH: "EXECUTIVE SUMMARY\nA high-priority security incident has been detected. Prompt SOC review is required.\n\nDETAILED OBSERVATIONS\nThe scene analysis flagged anomalous behavior consistent with a potential security breach or policy violation.\n\nRECOMMENDED ACTIONS\n1. Verify incident via physical patrol\n2. Check access logs for anomalies\n3. Update incident status after verification\n\nLEGAL NOTES\nEvidence logged and secured.",
     SeverityLevel.MEDIUM: "EXECUTIVE SUMMARY\nA medium-priority incident has been logged for SOC review.\n\nDETAILED OBSERVATIONS\nAnomalous activity detected that may warrant further investigation.\n\nRECOMMENDED ACTIONS\n1. Monitor the affected zone\n2. Review over the next 30 minutes\n\nLEGAL NOTES\nLog entry created.",
     SeverityLevel.LOW: "EXECUTIVE SUMMARY\nRoutine activity logged for compliance purposes. No action required.\n\nDETAILED OBSERVATIONS\nNormal operations detected within expected parameters.\n\nRECOMMENDED ACTIONS\nNo action required.\n\nLEGAL NOTES\nCompliance log entry.",
@@ -163,14 +163,14 @@ async def seed():
         if not existing_op.scalar_one_or_none():
             op = Operator(
                 username="admin",
-                email="admin@nexus.local",
-                hashed_password=hash_password("nexus2026"),
+                email="admin@raven.local",
+                hashed_password=hash_password("raven2026"),
                 role=OperatorRole.ADMIN,
             )
             db.add(op)
             await db.flush()
             op_id = op.id
-            print("[OK] Created operator: admin / nexus2026")
+            print("[OK] Created operator: admin / raven2026")
         else:
             op_result = await db.execute(select(Operator).where(Operator.username == "admin"))
             op_id = op_result.scalar_one().id
@@ -291,13 +291,13 @@ async def seed():
                         incident_id=inc.id, channel=AlertChannel.SMS,
                         recipient="+254700000000", status=AlertStatus.MOCK,
                         sent_at=ts + timedelta(seconds=15),
-                        message_preview=f"🚨 NEXUS ALERT [{inc_data['severity'].value}] — {inc_data['threat_type']}",
+                        message_preview=f"🚨 Raven AI ALERT [{inc_data['severity'].value}] — {inc_data['threat_type']}",
                     ))
                     db.add(Alert(
                         incident_id=inc.id, channel=AlertChannel.EMAIL,
-                        recipient="soc@nexus.local", status=AlertStatus.MOCK,
+                        recipient="soc@raven.local", status=AlertStatus.MOCK,
                         sent_at=ts + timedelta(seconds=20),
-                        message_preview=f"[NEXUS CCTV] {inc_data['severity'].value} Alert — {inc_data['threat_type']}",
+                        message_preview=f"[Raven AI CCTV] {inc_data['severity'].value} Alert — {inc_data['threat_type']}",
                     ))
 
             await db.commit()
@@ -355,8 +355,8 @@ async def seed():
         await db.commit()
         print("[OK] Cryptographic audit log seeded")
 
-    print("\n>> NEXUS CCTV demo data ready!")
-    print("   Login: admin / nexus2026")
+    print("\n>> Raven AI CCTV demo data ready!")
+    print("   Login: admin / raven2026")
     print("   Start: uvicorn backend.main:app --reload --port 8000")
     print("   Open:  http://localhost:8000\n")
 

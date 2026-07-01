@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — HITL (Human-in-the-Loop) Workflow
+Raven AI CCTV — HITL (Human-in-the-Loop) Workflow
 State machine: PENDING → APPROVED / REJECTED / ESCALATED
 Writes full audit trail on every SOC decision.
 """

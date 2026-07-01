@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Biometric Identification & Facial Recognition Service
+Raven AI CCTV — Biometric Identification & Facial Recognition Service
 Uses OpenCV Haar Cascades for face detection.
 Extracts 128-dim features using a local face_recognition library or a robust HSV-texture feature descriptor fallback.
 """

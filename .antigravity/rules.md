@@ -1,6 +1,6 @@
-# NEXUS CCTV — Project Constitution
+# Raven AI CCTV — Project Constitution
 
-This document defines the core principles, operational constraints, and forensic integrity standards governing the NEXUS CCTV Autonomous System.
+This document defines the core principles, operational constraints, and forensic integrity standards governing the Raven AI CCTV Autonomous System.
 
 ---
 

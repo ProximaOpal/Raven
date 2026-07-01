@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Camera Feed Simulator
+Raven AI CCTV — Camera Feed Simulator
 Feeds demo images into the analysis pipeline at a configurable rate.
 Simulates 1-4 simultaneous RTSP camera streams.
 
@@ -176,7 +176,7 @@ async def run_simulation(num_streams: int, interval: float, duration: float | No
 
 
 def main():
-    parser = argparse.ArgumentParser(description="NEXUS CCTV — Camera Feed Simulator")
+    parser = argparse.ArgumentParser(description="Raven AI CCTV — Camera Feed Simulator")
     parser.add_argument("--streams", type=int, default=4, help="Number of camera streams (default: 4)")
     parser.add_argument("--interval", type=float, default=10.0, help="Frame submission interval in seconds (default: 10)")
     parser.add_argument("--duration", type=float, default=None, help="Run duration in seconds (default: indefinite)")

@@ -1,10 +1,10 @@
 services:
-  nexus-api:
+  raven-api:
     build: .
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://nexus:nexus@postgres:5432/nexus
+      - DATABASE_URL=postgresql+asyncpg://raven:raven@postgres:5432/raven
       - REDIS_URL=redis://redis:6379/0
     env_file:
       - .env
@@ -21,7 +21,7 @@ services:
     build: .
     command: celery -A backend.workers.pipeline worker --loglevel=info --concurrency=4
     environment:
-      - DATABASE_URL=postgresql+asyncpg://nexus:nexus@postgres:5432/nexus
+      - DATABASE_URL=postgresql+asyncpg://raven:raven@postgres:5432/raven
       - REDIS_URL=redis://redis:6379/0
     env_file:
       - .env
@@ -33,13 +33,13 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: nexus
-      POSTGRES_PASSWORD: nexus
-      POSTGRES_DB: nexus
+      POSTGRES_USER: raven
+      POSTGRES_PASSWORD: raven
+      POSTGRES_DB: raven
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nexus"]
+      test: ["CMD-SHELL", "pg_isready -U raven"]
       interval: 5s
       timeout: 5s
       retries: 5

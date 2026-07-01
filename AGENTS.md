@@ -1,6 +1,6 @@
 # AgentX Orchestration Pattern & HITL Guardrails
 
-This document establishes the AgentX hierarchical orchestration pattern and defines the strict Human-in-the-Loop (HITL) safety boundaries for the NEXUS CCTV system.
+This document establishes the AgentX hierarchical orchestration pattern and defines the strict Human-in-the-Loop (HITL) safety boundaries for the Raven AI CCTV system.
 
 ---
 
@@ -43,7 +43,7 @@ To prevent unauthorized actions, the system enforces **Zero-Autonomy** (requirin
 
 ### B. Destructive File/Data Actions
 * **Trigger**: Any command attempting to delete, reset, or overwrite:
-  * The database (`nexus.db` or PostgreSQL relations).
+  * The database (`raven.db` or PostgreSQL relations).
   * Enrolled biometrics profiles or face embeddings.
   * Audit logs (`audit_log` tables).
 * **Requirement**: A CLI or Web UI prompt must block execution until a super-operator enters credentials and approves the request.

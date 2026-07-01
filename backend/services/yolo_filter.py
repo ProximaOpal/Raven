@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — YOLOv8-nano Pre-filter
+Raven AI CCTV — YOLOv8-nano Pre-filter
 Detects persons/vehicles in frames before sending to Qwen-VL-Max.
 Reduces API costs by ~85% by skipping empty frames.
 """

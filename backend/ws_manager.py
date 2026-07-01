@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — WebSocket Connection Manager
+Raven AI CCTV — WebSocket Connection Manager
 Manages SOC dashboard real-time push connections.
 """
 import json
@@ -26,7 +26,7 @@ class ConnectionManager:
         # Send welcome ping
         await self.send_personal(websocket, {
             "event": "ping",
-            "data": {"message": "NEXUS SOC dashboard connected", "connections": len(self.active_connections)},
+            "data": {"message": "Raven AI SOC dashboard connected", "connections": len(self.active_connections)},
         })
 
     def disconnect(self, websocket: WebSocket) -> None:

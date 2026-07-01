@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Multi-Channel Alert Dispatch
+Raven AI CCTV — Multi-Channel Alert Dispatch
 Sends CRITICAL/HIGH incident alerts via Twilio SMS, SendGrid email, and WebSocket.
 Falls back to mock/log mode when credentials are not configured.
 """
@@ -21,7 +21,7 @@ ALERT_SEVERITY_THRESHOLD = {SeverityLevel.CRITICAL, SeverityLevel.HIGH}
 async def send_sms_alert(incident_id: int, severity: str, threat_type: str, location: str) -> dict:
     """Send SMS alert via Twilio for CRITICAL/HIGH incidents."""
     message = (
-        f"🚨 NEXUS ALERT [{severity}]\n"
+        f"🚨 Raven AI ALERT [{severity}]\n"
         f"Incident #{incident_id}: {threat_type}\n"
         f"Location: {location}\n"
         f"Action required — SOC dashboard: http://your-ecs-ip:8000"
@@ -75,9 +75,9 @@ async def send_email_alert(
     report_en: str | None = None,
 ) -> dict:
     """Send structured incident email via SendGrid."""
-    subject = f"[NEXUS CCTV] {severity} Alert — {threat_type} @ {location}"
+    subject = f"[Raven AI CCTV] {severity} Alert — {threat_type} @ {location}"
     body_html = _build_email_html(incident_id, severity, threat_type, location, description, report_en)
-    body_text = f"NEXUS CCTV Alert\n\nIncident #{incident_id}\nSeverity: {severity}\nType: {threat_type}\nLocation: {location}\n\n{description}"
+    body_text = f"Raven AI CCTV Alert\n\nIncident #{incident_id}\nSeverity: {severity}\nType: {threat_type}\nLocation: {location}\n\n{description}"
 
     if not settings.is_sendgrid_configured:
         logger.info(f"MOCK EMAIL → {settings.alert_to_email} | Subject: {subject}")
@@ -144,7 +144,7 @@ def _build_email_html(
 <body style="font-family: 'Courier New', monospace; background: #f1f5f9; padding: 20px;">
   <div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
     <div style="background: #0f172a; padding: 24px; text-align: center;">
-      <h1 style="color: white; margin: 0; font-size: 20px; letter-spacing: 4px;">NEXUS CCTV</h1>
+      <h1 style="color: white; margin: 0; font-size: 20px; letter-spacing: 4px;">Raven AI CCTV</h1>
       <p style="color: #94a3b8; margin: 4px 0 0; font-size: 12px;">AUTONOMOUS SECURITY OPERATIONS</p>
     </div>
     <div style="padding: 24px;">
@@ -165,7 +165,7 @@ def _build_email_html(
       </div>
     </div>
     <div style="background: #f1f5f9; padding: 16px; text-align: center; font-size: 11px; color: #94a3b8;">
-      NEXUS CCTV · Powered by Qwen-VL-Max · Alibaba Cloud ECS<br>
+      Raven AI CCTV · Powered by Qwen-VL-Max · Alibaba Cloud ECS<br>
       This is an automated alert. SHA-256 signed evidence package available on dashboard.
     </div>
   </div>

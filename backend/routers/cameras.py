@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Cameras Router
+Raven AI CCTV — Cameras Router
 GET/POST /api/cameras, PATCH /api/cameras/{id}
 """
 from fastapi import APIRouter, Depends, HTTPException

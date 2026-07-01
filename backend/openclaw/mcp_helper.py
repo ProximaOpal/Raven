@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Stdio-based Model Context Protocol (MCP) Server Helper
+Raven AI CCTV — Stdio-based Model Context Protocol (MCP) Server Helper
 Implements JSON-RPC 2.0 protocol over stdin/stdout for seamless OpenClaw integration.
 """
 import sys

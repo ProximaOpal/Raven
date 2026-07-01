@@ -1,6 +1,6 @@
-# NEXUS CCTV — Architecture & Data Flow
+# Raven AI CCTV — Architecture & Data Flow
 
-This document details the system design, hardware/software stack, and pipeline workflow of NEXUS CCTV.
+This document details the system design, hardware/software stack, and pipeline workflow of Raven AI CCTV.
 
 ## System Architecture Diagram
 

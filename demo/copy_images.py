@@ -2,8 +2,8 @@ import os
 import shutil
 
 src_dir = r"C:\Users\grvns\.gemini\antigravity\brain\c20edf62-5435-40a0-95db-89b5ad9bd232"
-dst_dir1 = r"C:\Users\grvns\.gemini\antigravity\scratch\nexus-cctv\demo\sample_incidents"
-dst_dir2 = r"C:\Users\grvns\.gemini\antigravity\scratch\nexus-cctv\frontend\images"
+dst_dir1 = r"C:\Users\grvns\.gemini\antigravity\scratch\Raven\demo\sample_incidents"
+dst_dir2 = r"C:\Users\grvns\.gemini\antigravity\scratch\Raven\frontend\images"
 
 os.makedirs(dst_dir1, exist_ok=True)
 os.makedirs(dst_dir2, exist_ok=True)

@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Auth Router
+Raven AI CCTV — Auth Router
 POST /api/auth/login, GET /api/auth/me
 """
 from datetime import datetime, timezone

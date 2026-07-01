@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Forensics Signer MCP Server
+Raven AI CCTV — Forensics Signer MCP Server
 Exposes the evidence package sealing and signing tool.
 """
 import sys

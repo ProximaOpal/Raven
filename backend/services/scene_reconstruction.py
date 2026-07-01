@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Multi-Camera 3D Scene Reconstruction & Trajectory Tracking Service
+Raven AI CCTV — Multi-Camera 3D Scene Reconstruction & Trajectory Tracking Service
 Computes Bird's Eye View (BEV) projections using Homography matrices.
 Implements a Multi-Target Multi-Camera (MTMC) Tracker with appearance-based ReID.
 """

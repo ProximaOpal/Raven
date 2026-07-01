@@ -1,13 +1,13 @@
 ========================================================================
-NEXUS CCTV PROJECT CODEBASE BUNDLE FOR NOTEBOOK LM
-Generated at: nexus_cctv_all_code.txt
+Raven AI CCTV PROJECT CODEBASE BUNDLE FOR NOTEBOOK LM
+Generated at: raven_cctv_all_code.txt
 ========================================================================
 
 ========================================================================
 FILE: .env.example
 ========================================================================
 # ─────────────────────────────────────────────────────────────────
-# NEXUS CCTV — Environment Variables
+# Raven AI CCTV — Environment Variables
 # Copy to .env and fill in real values. Demo mode works without them.
 # ─────────────────────────────────────────────────────────────────
 
@@ -23,9 +23,9 @@ QWEN_PLUS_MODEL=qwen-plus
 
 # ── DATABASE ─────────────────────────────────────────────────────
 # SQLite (dev/demo — zero config):
-DATABASE_URL=sqlite+aiosqlite:///./nexus.db
+DATABASE_URL=sqlite+aiosqlite:///./raven.db
 # PostgreSQL (production):
-# DATABASE_URL=postgresql+asyncpg://nexus:password@localhost:5432/nexus
+# DATABASE_URL=postgresql+asyncpg://raven:password@localhost:5432/raven
 
 # ── SECURITY / JWT ───────────────────────────────────────────────
 SECRET_KEY=change-me-to-a-long-random-string-in-production
@@ -39,13 +39,13 @@ ALERT_TO_NUMBER=+1234567890
 
 # ── SENDGRID EMAIL ────────────────────────────────────────────────
 SENDGRID_API_KEY=SG.your-sendgrid-api-key
-ALERT_FROM_EMAIL=nexus@yourdomain.com
+ALERT_FROM_EMAIL=raven@yourdomain.com
 ALERT_TO_EMAIL=soc@yourdomain.com
 
 # ── ALIBABA CLOUD OSS ─────────────────────────────────────────────
 OSS_ACCESS_KEY_ID=your-oss-access-key-id
 OSS_ACCESS_KEY_SECRET=your-oss-access-key-secret
-OSS_BUCKET_NAME=nexus-cctv-evidence
+OSS_BUCKET_NAME=raven-cctv-evidence
 OSS_ENDPOINT=https://oss-ap-southeast-1.aliyuncs.com
 
 # ── REDIS (Celery broker) ─────────────────────────────────────────
@@ -63,7 +63,7 @@ FILE: AGENTS.md
 ========================================================================
 # AgentX Orchestration Pattern & HITL Guardrails
 
-This document establishes the AgentX hierarchical orchestration pattern and defines the strict Human-in-the-Loop (HITL) safety boundaries for the NEXUS CCTV system.
+This document establishes the AgentX hierarchical orchestration pattern and defines the strict Human-in-the-Loop (HITL) safety boundaries for the Raven AI CCTV system.
 
 ---
 
@@ -106,7 +106,7 @@ To prevent unauthorized actions, the system enforces **Zero-Autonomy** (requirin
 
 ### B. Destructive File/Data Actions
 * **Trigger**: Any command attempting to delete, reset, or overwrite:
-  * The database (`nexus.db` or PostgreSQL relations).
+  * The database (`raven.db` or PostgreSQL relations).
   * Enrolled biometrics profiles or face embeddings.
   * Audit logs (`audit_log` tables).
 * **Requirement**: A CLI or Web UI prompt must block execution until a super-operator enters credentials and approves the request.
@@ -146,7 +146,7 @@ FILE: LICENSE
 ========================================================================
 MIT License
 
-Copyright (c) 2026 NEXUS CCTV Contributors
+Copyright (c) 2026 Raven AI CCTV Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -170,20 +170,20 @@ SOFTWARE.
 ========================================================================
 FILE: README.md
 ========================================================================
-# NEXUS CCTV — Autonomous Security Operations
+# Raven AI CCTV — Autonomous Security Operations
 
 > **Qwen Cloud Global AI Hackathon 2026 · Track 4: Autopilot Agent**
 
 End-to-end autonomous CCTV security operations. Camera alerts → Qwen-VL-Max analysis → incident report → multi-channel notification → HITL SOC approval → law enforcement evidence handoff.
 
-![NEXUS CCTV Architecture](docs/architecture.png)
+![Raven AI CCTV Architecture](docs/architecture.png)
 
 ## 🚀 Quick Start (Demo Mode — No API Keys Required)
 
 ```bash
 # 1. Clone & enter
-git clone https://github.com/your-username/nexus-cctv
-cd nexus-cctv
+git clone https://github.com/your-username/Raven
+cd Raven
 
 # 2. Install dependencies
 pip install -r requirements.txt
@@ -271,7 +271,7 @@ FILE: SOUL.md
 ========================================================================
 # Agent Soul & Persona: Autonomous Security Officer
 
-You are **NEXUS Sentinel**, the autonomous intelligence core of the NEXUS CCTV Security Operations Center.
+You are **Raven AI Sentinel**, the autonomous intelligence core of the Raven AI CCTV Security Operations Center.
 
 ---
 
@@ -304,12 +304,12 @@ You are **NEXUS Sentinel**, the autonomous intelligence core of the NEXUS CCTV S
 FILE: docker-compose.yml
 ========================================================================
 services:
-  nexus-api:
+  raven-api:
     build: .
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://nexus:nexus@postgres:5432/nexus
+      - DATABASE_URL=postgresql+asyncpg://raven:raven@postgres:5432/raven
       - REDIS_URL=redis://redis:6379/0
     env_file:
       - .env
@@ -326,7 +326,7 @@ services:
     build: .
     command: celery -A backend.workers.pipeline worker --loglevel=info --concurrency=4
     environment:
-      - DATABASE_URL=postgresql+asyncpg://nexus:nexus@postgres:5432/nexus
+      - DATABASE_URL=postgresql+asyncpg://raven:raven@postgres:5432/raven
       - REDIS_URL=redis://redis:6379/0
     env_file:
       - .env
@@ -338,13 +338,13 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: nexus
-      POSTGRES_PASSWORD: nexus
-      POSTGRES_DB: nexus
+      POSTGRES_USER: raven
+      POSTGRES_PASSWORD: raven
+      POSTGRES_DB: raven
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nexus"]
+      test: ["CMD-SHELL", "pg_isready -U raven"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -416,7 +416,7 @@ numpy
 ========================================================================
 FILE: .agent/workflows/heartbeat.yml
 ========================================================================
-# NEXUS CCTV — 30-Minute Heartbeat Workflow
+# Raven AI CCTV — 30-Minute Heartbeat Workflow
 # File: .agent/workflows/heartbeat.yml
 
 name: SOC Heartbeat & Digest
@@ -469,9 +469,9 @@ steps:
 ========================================================================
 FILE: .antigravity/rules.md
 ========================================================================
-# NEXUS CCTV — Project Constitution
+# Raven AI CCTV — Project Constitution
 
-This document defines the core principles, operational constraints, and forensic integrity standards governing the NEXUS CCTV Autonomous System.
+This document defines the core principles, operational constraints, and forensic integrity standards governing the Raven AI CCTV Autonomous System.
 
 ---
 
@@ -510,7 +510,7 @@ FILE: backend/__init__.py
 FILE: backend/auth.py
 ========================================================================
 """
-NEXUS CCTV — Auth Utilities (JWT)
+Raven AI CCTV — Auth Utilities (JWT)
 """
 import logging
 import bcrypt
@@ -598,7 +598,7 @@ async def require_operator(
 FILE: backend/config.py
 ========================================================================
 """
-NEXUS CCTV — Application Configuration
+Raven AI CCTV — Application Configuration
 Pydantic settings loaded from environment / .env file.
 """
 from functools import lru_cache
@@ -622,10 +622,10 @@ class Settings(BaseSettings):
     qwen_plus_model: str = "qwen-plus"
 
     # ── Database ─────────────────────────────────────────────────
-    database_url: str = "sqlite+aiosqlite:///./nexus.db"
+    database_url: str = "sqlite+aiosqlite:///./raven.db"
 
     # ── Security / JWT ───────────────────────────────────────────
-    secret_key: str = "nexus-dev-secret-change-in-prod"
+    secret_key: str = "raven-dev-secret-change-in-prod"
     access_token_expire_minutes: int = 480
     algorithm: str = "HS256"
 
@@ -637,13 +637,13 @@ class Settings(BaseSettings):
 
     # ── SendGrid ─────────────────────────────────────────────────
     sendgrid_api_key: str = ""
-    alert_from_email: str = "nexus@example.com"
+    alert_from_email: str = "raven@example.com"
     alert_to_email: str = "soc@example.com"
 
     # ── Alibaba Cloud OSS ────────────────────────────────────────
     oss_access_key_id: str = ""
     oss_access_key_secret: str = ""
-    oss_bucket_name: str = "nexus-cctv-evidence"
+    oss_bucket_name: str = "Raven-evidence"
     oss_endpoint: str = "https://oss-ap-southeast-1.aliyuncs.com"
 
     # ── Redis / Celery ───────────────────────────────────────────
@@ -684,7 +684,7 @@ def get_settings() -> Settings:
 FILE: backend/database.py
 ========================================================================
 """
-NEXUS CCTV — Database Engine & Session Factory
+Raven AI CCTV — Database Engine & Session Factory
 Supports SQLite (dev) and PostgreSQL (prod) via DATABASE_URL.
 """
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -742,7 +742,7 @@ async def init_db() -> None:
 FILE: backend/main.py
 ========================================================================
 """
-NEXUS CCTV — FastAPI Application Factory
+Raven AI CCTV — FastAPI Application Factory
 Entry point: uvicorn backend.main:app
 """
 import logging
@@ -846,7 +846,7 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     import asyncio
     logger.info("=" * 60)
-    logger.info("  NEXUS CCTV — Autonomous Security Operations")
+    logger.info("  Raven AI CCTV — Autonomous Security Operations")
     logger.info(f"  Demo Mode: {settings.demo_mode}")
     logger.info(f"  Qwen Model: {settings.qwen_vl_model}")
     logger.info(f"  Database: {settings.database_url[:40]}...")
@@ -872,11 +872,11 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     logger.info("OpenClaw AgentX bridge task stopped")
-    logger.info("NEXUS CCTV shutting down")
+    logger.info("Raven AI CCTV shutting down")
 
 
 app = FastAPI(
-    title="NEXUS CCTV — Autonomous Security Operations",
+    title="Raven AI CCTV — Autonomous Security Operations",
     description=(
         "End-to-end AI-powered CCTV security operations system. "
         "Camera alerts → Qwen-VL-Max analysis → incident report → "
@@ -918,7 +918,7 @@ app.include_router(rf.router)
 async def health():
     return {
         "status": "ok",
-        "service": "NEXUS CCTV",
+        "service": "Raven AI CCTV",
         "demo_mode": settings.demo_mode,
         "qwen_model": settings.qwen_vl_model,
         "version": "1.0.0",
@@ -972,7 +972,7 @@ if frontend_path.exists():
 FILE: backend/models.py
 ========================================================================
 """
-NEXUS CCTV — SQLAlchemy ORM Models
+Raven AI CCTV — SQLAlchemy ORM Models
 Tables: cameras, incidents, alerts, audit_log, operators
 """
 import enum
@@ -1182,7 +1182,7 @@ class TrajectoryPoint(Base):
 FILE: backend/schemas.py
 ========================================================================
 """
-NEXUS CCTV — Pydantic v2 Schemas (Request / Response models)
+Raven AI CCTV — Pydantic v2 Schemas (Request / Response models)
 """
 from datetime import datetime
 from typing import Any
@@ -1377,7 +1377,7 @@ class PipelineStatus(BaseModel):
 FILE: backend/ws_manager.py
 ========================================================================
 """
-NEXUS CCTV — WebSocket Connection Manager
+Raven AI CCTV — WebSocket Connection Manager
 Manages SOC dashboard real-time push connections.
 """
 import json
@@ -1404,7 +1404,7 @@ class ConnectionManager:
         # Send welcome ping
         await self.send_personal(websocket, {
             "event": "ping",
-            "data": {"message": "NEXUS SOC dashboard connected", "connections": len(self.active_connections)},
+            "data": {"message": "Raven AI SOC dashboard connected", "connections": len(self.active_connections)},
         })
 
     def disconnect(self, websocket: WebSocket) -> None:
@@ -1475,7 +1475,7 @@ FILE: backend/openclaw/__init__.py
 FILE: backend/openclaw/agentx_runtime.py
 ========================================================================
 """
-NEXUS CCTV — AgentX Hierarchical Orchestration Runtime
+Raven AI CCTV — AgentX Hierarchical Orchestration Runtime
 Supervisor (orchestrator), Planner (sequencer), Executor (actor).
 """
 import os
@@ -1753,7 +1753,7 @@ class AgentXRuntime:
 FILE: backend/openclaw/bridge.py
 ========================================================================
 """
-NEXUS CCTV — OpenClaw WebSocket Gateway Bridge
+Raven AI CCTV — OpenClaw WebSocket Gateway Bridge
 Connects to ws://127.0.0.1:18789, authenticates, and routes triggers to AgentX pipeline.
 """
 import json
@@ -1837,7 +1837,7 @@ async def start_openclaw_bridge():
 FILE: backend/openclaw/mcp_biometrics.py
 ========================================================================
 """
-NEXUS CCTV — Biometric Matcher MCP Server
+Raven AI CCTV — Biometric Matcher MCP Server
 Exposes face detection and identification tool.
 """
 import sys
@@ -1934,7 +1934,7 @@ if __name__ == "__main__":
 FILE: backend/openclaw/mcp_forensics.py
 ========================================================================
 """
-NEXUS CCTV — Forensics Signer MCP Server
+Raven AI CCTV — Forensics Signer MCP Server
 Exposes the evidence package sealing and signing tool.
 """
 import sys
@@ -2013,7 +2013,7 @@ if __name__ == "__main__":
 FILE: backend/openclaw/mcp_helper.py
 ========================================================================
 """
-NEXUS CCTV — Stdio-based Model Context Protocol (MCP) Server Helper
+Raven AI CCTV — Stdio-based Model Context Protocol (MCP) Server Helper
 Implements JSON-RPC 2.0 protocol over stdin/stdout for seamless OpenClaw integration.
 """
 import sys
@@ -2146,7 +2146,7 @@ class MCPServer:
 FILE: backend/openclaw/mcp_yolo.py
 ========================================================================
 """
-NEXUS CCTV — YOLO Filter MCP Server
+Raven AI CCTV — YOLO Filter MCP Server
 Exposes the object pre-filter tool for OpenClaw.
 """
 import sys
@@ -2215,7 +2215,7 @@ FILE: backend/routers/__init__.py
 FILE: backend/routers/audit.py
 ========================================================================
 """
-NEXUS CCTV — Cryptographic Audit Log Verification Router
+Raven AI CCTV — Cryptographic Audit Log Verification Router
 GET /api/audit/verify
 """
 import hashlib
@@ -2304,7 +2304,7 @@ async def verify_audit_trail(
 FILE: backend/routers/auth.py
 ========================================================================
 """
-NEXUS CCTV — Auth Router
+Raven AI CCTV — Auth Router
 POST /api/auth/login, GET /api/auth/me
 """
 from datetime import datetime, timezone
@@ -2454,7 +2454,7 @@ async def register(body: OperatorCreate, db: AsyncSession = Depends(get_db)):
 FILE: backend/routers/biometrics.py
 ========================================================================
 """
-NEXUS CCTV — Biometrics Router
+Raven AI CCTV — Biometrics Router
 GET /api/biometrics/profiles, POST /api/biometrics/enroll
 """
 import io
@@ -2586,7 +2586,7 @@ async def serve_biometric_image(filename: str):
 FILE: backend/routers/cameras.py
 ========================================================================
 """
-NEXUS CCTV — Cameras Router
+Raven AI CCTV — Cameras Router
 GET/POST /api/cameras, PATCH /api/cameras/{id}
 """
 from fastapi import APIRouter, Depends, HTTPException
@@ -2640,7 +2640,7 @@ async def delete_camera(camera_id: int, db: AsyncSession = Depends(get_db)):
 FILE: backend/routers/evidence.py
 ========================================================================
 """
-NEXUS CCTV — Evidence Router
+Raven AI CCTV — Evidence Router
 GET /api/evidence/{incident_id}/download — PDF + archive download
 GET /api/evidence/{incident_id}/audit — Full audit log for incident
 """
@@ -2667,7 +2667,7 @@ async def download_pdf(incident_id: int, db: AsyncSession = Depends(get_db)):
     return FileResponse(
         inc.pdf_path,
         media_type="application/pdf",
-        filename=f"nexus_incident_{incident_id}_report.pdf",
+        filename=f"raven_incident_{incident_id}_report.pdf",
     )
 
 
@@ -2679,7 +2679,7 @@ async def download_archive(incident_id: int, db: AsyncSession = Depends(get_db))
     return FileResponse(
         inc.archive_path,
         media_type="application/zip",
-        filename=f"nexus_incident_{incident_id}_evidence.zip",
+        filename=f"raven_incident_{incident_id}_evidence.zip",
     )
 
 
@@ -2705,7 +2705,7 @@ async def _get_incident(db: AsyncSession, incident_id: int) -> Incident:
 FILE: backend/routers/incidents.py
 ========================================================================
 """
-NEXUS CCTV — Incidents Router
+Raven AI CCTV — Incidents Router
 GET /api/incidents, GET /api/incidents/{id}
 POST /api/incidents/{id}/approve|reject|escalate
 POST /api/incidents/analyze (manual frame submission)
@@ -3028,7 +3028,7 @@ def _get_ip(request: Request) -> str:
 FILE: backend/routers/rf.py
 ========================================================================
 """
-NEXUS CCTV — RF / Wi-Fi Spatial Intelligence Router
+Raven AI CCTV — RF / Wi-Fi Spatial Intelligence Router
 GET /api/rf/aps, GET /api/rf/telemetry, POST /api/rf/simulate-move
 """
 from fastapi import APIRouter, HTTPException
@@ -3068,7 +3068,7 @@ async def simulate_move(body: RFMoveRequest):
 FILE: backend/routers/search.py
 ========================================================================
 """
-NEXUS CCTV — Search Router
+Raven AI CCTV — Search Router
 POST /api/search — NL query → SQL filter → incident results
 """
 from fastapi import APIRouter, Depends, HTTPException
@@ -3126,7 +3126,7 @@ async def search_incidents(body: SearchRequest, db: AsyncSession = Depends(get_d
 FILE: backend/routers/ws.py
 ========================================================================
 """
-NEXUS CCTV — WebSocket Router
+Raven AI CCTV — WebSocket Router
 WS /ws/soc — Real-time SOC dashboard push
 """
 import logging
@@ -3170,7 +3170,7 @@ FILE: backend/services/__init__.py
 FILE: backend/services/alert_dispatch.py
 ========================================================================
 """
-NEXUS CCTV — Multi-Channel Alert Dispatch
+Raven AI CCTV — Multi-Channel Alert Dispatch
 Sends CRITICAL/HIGH incident alerts via Twilio SMS, SendGrid email, and WebSocket.
 Falls back to mock/log mode when credentials are not configured.
 """
@@ -3192,7 +3192,7 @@ ALERT_SEVERITY_THRESHOLD = {SeverityLevel.CRITICAL, SeverityLevel.HIGH}
 async def send_sms_alert(incident_id: int, severity: str, threat_type: str, location: str) -> dict:
     """Send SMS alert via Twilio for CRITICAL/HIGH incidents."""
     message = (
-        f"🚨 NEXUS ALERT [{severity}]\n"
+        f"🚨 Raven AI ALERT [{severity}]\n"
         f"Incident #{incident_id}: {threat_type}\n"
         f"Location: {location}\n"
         f"Action required — SOC dashboard: http://your-ecs-ip:8000"
@@ -3246,9 +3246,9 @@ async def send_email_alert(
     report_en: str | None = None,
 ) -> dict:
     """Send structured incident email via SendGrid."""
-    subject = f"[NEXUS CCTV] {severity} Alert — {threat_type} @ {location}"
+    subject = f"[Raven AI CCTV] {severity} Alert — {threat_type} @ {location}"
     body_html = _build_email_html(incident_id, severity, threat_type, location, description, report_en)
-    body_text = f"NEXUS CCTV Alert\n\nIncident #{incident_id}\nSeverity: {severity}\nType: {threat_type}\nLocation: {location}\n\n{description}"
+    body_text = f"Raven AI CCTV Alert\n\nIncident #{incident_id}\nSeverity: {severity}\nType: {threat_type}\nLocation: {location}\n\n{description}"
 
     if not settings.is_sendgrid_configured:
         logger.info(f"MOCK EMAIL → {settings.alert_to_email} | Subject: {subject}")
@@ -3315,7 +3315,7 @@ def _build_email_html(
 <body style="font-family: 'Courier New', monospace; background: #f1f5f9; padding: 20px;">
   <div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
     <div style="background: #0f172a; padding: 24px; text-align: center;">
-      <h1 style="color: white; margin: 0; font-size: 20px; letter-spacing: 4px;">NEXUS CCTV</h1>
+      <h1 style="color: white; margin: 0; font-size: 20px; letter-spacing: 4px;">Raven AI CCTV</h1>
       <p style="color: #94a3b8; margin: 4px 0 0; font-size: 12px;">AUTONOMOUS SECURITY OPERATIONS</p>
     </div>
     <div style="padding: 24px;">
@@ -3336,7 +3336,7 @@ def _build_email_html(
       </div>
     </div>
     <div style="background: #f1f5f9; padding: 16px; text-align: center; font-size: 11px; color: #94a3b8;">
-      NEXUS CCTV · Powered by Qwen-VL-Max · Alibaba Cloud ECS<br>
+      Raven AI CCTV · Powered by Qwen-VL-Max · Alibaba Cloud ECS<br>
       This is an automated alert. SHA-256 signed evidence package available on dashboard.
     </div>
   </div>
@@ -3378,7 +3378,7 @@ async def dispatch_alerts(
 FILE: backend/services/biometrics.py
 ========================================================================
 """
-NEXUS CCTV — Biometric Identification & Facial Recognition Service
+Raven AI CCTV — Biometric Identification & Facial Recognition Service
 Uses OpenCV Haar Cascades for face detection.
 Extracts 128-dim features using a local face_recognition library or a robust HSV-texture feature descriptor fallback.
 """
@@ -3563,7 +3563,7 @@ class BiometricsService:
 FILE: backend/services/camera_ingest.py
 ========================================================================
 """
-NEXUS CCTV — Camera Ingest
+Raven AI CCTV — Camera Ingest
 Handles RTSP streams, file uploads, and mock camera feeds.
 """
 import asyncio
@@ -3690,7 +3690,7 @@ async def mock_camera_stream(
 FILE: backend/services/evidence_package.py
 ========================================================================
 """
-NEXUS CCTV — Evidence Package Generation
+Raven AI CCTV — Evidence Package Generation
 Creates SHA-256 signed PDF reports and encrypted ZIP archives.
 """
 import base64
@@ -3764,7 +3764,7 @@ PDF_TEMPLATE = """
 <body>
 
 <div class="header">
-  <h1>NEXUS CCTV</h1>
+  <h1>Raven AI CCTV</h1>
   <div class="subtitle">SECURITY INCIDENT REPORT · FORENSIC EVIDENCE DOCUMENT</div>
 </div>
 
@@ -3832,10 +3832,10 @@ PDF_TEMPLATE = """
   <h2>Chain of Custody</h2>
   <table class="chain-table">
     <tr><th>Stage</th><th>Timestamp (UTC)</th><th>Actor</th><th>Action</th></tr>
-    <tr><td>Detection</td><td>{timestamp}</td><td>NEXUS-VL (AI)</td><td>Frame captured and queued for analysis</td></tr>
+    <tr><td>Detection</td><td>{timestamp}</td><td>Raven AI-VL (AI)</td><td>Frame captured and queued for analysis</td></tr>
     <tr><td>Analysis</td><td>{timestamp}</td><td>Qwen-VL-Max API</td><td>Multimodal threat classification completed</td></tr>
     <tr><td>Report</td><td>{generated_at}</td><td>Qwen-Plus API</td><td>Bilingual incident report generated</td></tr>
-    <tr><td>Evidence</td><td>{generated_at}</td><td>NEXUS System</td><td>PDF + SHA-256 signature created</td></tr>
+    <tr><td>Evidence</td><td>{generated_at}</td><td>Raven AI System</td><td>PDF + SHA-256 signature created</td></tr>
     <tr><td>Review</td><td>{reviewed_at}</td><td>{reviewer}</td><td>{review_action}</td></tr>
   </table>
 </div>
@@ -3851,7 +3851,7 @@ PDF_TEMPLATE = """
 </div>
 
 <div class="footer">
-  NEXUS CCTV · Autonomous Security Operations · Powered by Qwen-VL-Max (DashScope) · Alibaba Cloud ECS<br>
+  Raven AI CCTV · Autonomous Security Operations · Powered by Qwen-VL-Max (DashScope) · Alibaba Cloud ECS<br>
   Qwen Cloud Global AI Hackathon 2026 · Track 4: Autopilot Agent<br>
   This document constitutes an official forensic record.
 </div>
@@ -3956,7 +3956,7 @@ def _generate_pdf(incident: Incident, camera_name: str, location: str, out_path:
         html_path = out_path.with_suffix(".html")
         html_path.write_text(html)
         # Create stub PDF
-        out_path.write_bytes(b"%PDF-1.4\n% NEXUS CCTV Evidence Report\n")
+        out_path.write_bytes(b"%PDF-1.4\n% Raven AI CCTV Evidence Report\n")
 
 
 def _hash_file(path: Path) -> str:
@@ -3971,7 +3971,7 @@ def _hash_file(path: Path) -> str:
 FILE: backend/services/hitl.py
 ========================================================================
 """
-NEXUS CCTV — HITL (Human-in-the-Loop) Workflow
+Raven AI CCTV — HITL (Human-in-the-Loop) Workflow
 State machine: PENDING → APPROVED / REJECTED / ESCALATED
 Writes full audit trail on every SOC decision.
 """
@@ -4121,7 +4121,7 @@ class HITLWorkflow:
 FILE: backend/services/qwen_plus.py
 ========================================================================
 """
-NEXUS CCTV — Qwen-Plus Integration
+Raven AI CCTV — Qwen-Plus Integration
 Generates bilingual incident reports (EN + Swahili) and semantic search filters.
 """
 import json
@@ -4193,11 +4193,11 @@ Examples:
 
 MOCK_REPORTS = {
     "CRITICAL": {
-        "report_en": """INCIDENT REPORT — NEXUS CCTV SECURITY SYSTEM
+        "report_en": """INCIDENT REPORT — Raven AI CCTV SECURITY SYSTEM
 Classification: CRITICAL | Priority: IMMEDIATE RESPONSE REQUIRED
 
 EXECUTIVE SUMMARY
-A perimeter security breach was detected at 20:47 EAT by the NEXUS AI surveillance system. An unauthorized individual was identified crossing the northern perimeter fence at the compound's northwest access point. The NEXUS-VL AI engine assessed the threat at severity level 9.2/10 (CRITICAL) with 94% confidence.
+A perimeter security breach was detected at 20:47 EAT by the Raven AI AI surveillance system. An unauthorized individual was identified crossing the northern perimeter fence at the compound's northwest access point. The Raven AI-VL AI engine assessed the threat at severity level 9.2/10 (CRITICAL) with 94% confidence.
 
 DETAILED OBSERVATIONS
 The subject — one adult male in dark clothing carrying an unidentified bag — entered the restricted zone via a deliberate breach of the perimeter fence. Motion analysis indicates purposeful movement toward the main building. The individual did not display any visible access credentials. Behavioral pattern analysis flagged the subject's posture and movement trajectory as consistent with unauthorized intrusion intent.
@@ -4210,11 +4210,11 @@ RECOMMENDED ACTIONS
 
 LEGAL AND FORENSIC NOTES
 This incident has been automatically recorded with a SHA-256 signed evidence package. Chain of custody is preserved from initial detection through AI analysis. All video evidence is stored in encrypted format on Alibaba Cloud OSS. This report constitutes a formal incident record and may be submitted to law enforcement upon SOC operator approval. Evidence integrity: VERIFIED.""",
-        "report_sw": """RIPOTI YA TUKIO — MFUMO WA USALAMA WA NEXUS CCTV
+        "report_sw": """RIPOTI YA TUKIO — MFUMO WA USALAMA WA Raven AI CCTV
 Uainishaji: MUHIMU | Kipaumbele: MWITIKIO WA HARAKA UNAHITAJIKA
 
 MUHTASARI WA MKURUGENZI
-Uvunjaji wa usalama wa mipaka uligunduliwa saa 20:47 EAT na mfumo wa ufuatiliaji wa AI wa NEXUS. Mtu asiye na ruhusa alitambuliwa akivuka uzio wa mipaka ya kaskazini kwenye hatua ya upatikanaji ya kaskazini magharibi ya kiwanja. Injini ya AI ya NEXUS-VL ilitathmini tishio kwa kiwango cha ukali wa 9.2/10 (MUHIMU) kwa uhakika wa asilimia 94.
+Uvunjaji wa usalama wa mipaka uligunduliwa saa 20:47 EAT na mfumo wa ufuatiliaji wa AI wa Raven AI. Mtu asiye na ruhusa alitambuliwa akivuka uzio wa mipaka ya kaskazini kwenye hatua ya upatikanaji ya kaskazini magharibi ya kiwanja. Injini ya AI ya Raven AI-VL ilitathmini tishio kwa kiwango cha ukali wa 9.2/10 (MUHIMU) kwa uhakika wa asilimia 94.
 
 UCHUNGUZI WA KINA
 Mhusika — mtu mzima wa kiume katika mavazi ya giza akibeba mfuko usiojulikana — aliingia kwenye eneo lililozuiwa kwa njia ya kuvunja kwa makusudi uzio wa mipaka. Uchambuzi wa mwendo unaonyesha harakati za makusudi kuelekea jengo kuu. Mtu huyo hakuonyesha vitambulisho vyovyote vya upatikanaji. Uchambuzi wa mfano wa tabia uliashiria mkao na njia ya harakati ya mhusika kama inayoendana na nia ya kuingia bila ruhusa.
@@ -4229,11 +4229,11 @@ MAELEZO YA KISHERIA NA UCHUNGUZI
 Tukio hili limerekodiwa kiotomatiki na kifurushi cha ushahidi kilichosainiwa na SHA-256. Mlolongo wa uhifadhi umehifadhiwa kuanzia ugunduzi wa awali hadi uchambuzi wa AI. Ushahidi wote wa video umehifadhiwa katika umbizo lililofichwa kwenye Alibaba Cloud OSS. Ripoti hii inaunda rekodi rasmi ya tukio na inaweza kuwasilishwa kwa vyombo vya utekelezaji wa sheria baada ya idhini ya mwendeshaji wa SOC. Uadilifu wa ushahidi: IMETHIBITISHWA."""
     },
     "LOW": {
-        "report_en": """INCIDENT REPORT — NEXUS CCTV SECURITY SYSTEM
+        "report_en": """INCIDENT REPORT — Raven AI CCTV SECURITY SYSTEM
 Classification: LOW | Priority: LOGGED FOR RECORD
 
 EXECUTIVE SUMMARY
-Routine activity was detected and logged at 20:47 EAT. The NEXUS AI surveillance system identified two uniformed staff members conducting normal operations within an authorized zone. Threat assessment: 1.2/10 (LOW). No action required.
+Routine activity was detected and logged at 20:47 EAT. The Raven AI AI surveillance system identified two uniformed staff members conducting normal operations within an authorized zone. Threat assessment: 1.2/10 (LOW). No action required.
 
 DETAILED OBSERVATIONS
 Two individuals wearing company uniforms were observed moving through the designated staff corridor. Movement patterns are consistent with authorized shift activity. Both individuals were identified via uniform recognition as registered staff. No anomalies, restricted zone breaches, or behavioral irregularities were detected.
@@ -4245,7 +4245,7 @@ RECOMMENDED ACTIONS
 
 LEGAL AND FORENSIC NOTES
 Low-priority log entry. Evidence package generated for compliance purposes. Chain of custody intact. No escalation warranted.""",
-        "report_sw": """RIPOTI YA TUKIO — MFUMO WA USALAMA WA NEXUS CCTV
+        "report_sw": """RIPOTI YA TUKIO — MFUMO WA USALAMA WA Raven AI CCTV
 Uainishaji: CHINI | Kipaumbele: ILIREKODIWA KWA KUMBUKUMBU
 
 MUHTASARI
@@ -4406,7 +4406,7 @@ def _mock_search(query: str) -> tuple[str, str]:
 FILE: backend/services/qwen_vl.py
 ========================================================================
 """
-NEXUS CCTV — Qwen-VL-Max Integration
+Raven AI CCTV — Qwen-VL-Max Integration
 Analyzes video frames for threat classification.
 Falls back to mock data in DEMO_MODE or on quota errors.
 """
@@ -4513,7 +4513,7 @@ MOCK_ANALYSES: list[dict] = [
 
 # ─── System Prompt ───────────────────────────────────────────────────────────
 
-THREAT_ANALYSIS_PROMPT = """You are NEXUS-VL, an expert AI security analyst reviewing CCTV footage.
+THREAT_ANALYSIS_PROMPT = """You are Raven AI-VL, an expert AI security analyst reviewing CCTV footage.
 
 Analyze the provided image and return a structured threat assessment in valid JSON format.
 
@@ -4672,7 +4672,7 @@ def _estimate_cost(tokens: int, model: str) -> float:
 FILE: backend/services/rf_sensor.py
 ========================================================================
 """
-NEXUS CCTV — RF / Wi-Fi Spatial Intelligence Service
+Raven AI CCTV — RF / Wi-Fi Spatial Intelligence Service
 Simulates Channel State Information (CSI) & RSSI signal disruptions from 3 indoor access points.
 Uses path-loss equations and trilateration with a Kalman filter to estimate occupant location.
 """
@@ -4839,7 +4839,7 @@ class RFSensorService:
 FILE: backend/services/scene_reconstruction.py
 ========================================================================
 """
-NEXUS CCTV — Multi-Camera 3D Scene Reconstruction & Trajectory Tracking Service
+Raven AI CCTV — Multi-Camera 3D Scene Reconstruction & Trajectory Tracking Service
 Computes Bird's Eye View (BEV) projections using Homography matrices.
 Implements a Multi-Target Multi-Camera (MTMC) Tracker with appearance-based ReID.
 """
@@ -5020,7 +5020,7 @@ import math
 FILE: backend/services/yolo_filter.py
 ========================================================================
 """
-NEXUS CCTV — YOLOv8-nano Pre-filter
+Raven AI CCTV — YOLOv8-nano Pre-filter
 Detects persons/vehicles in frames before sending to Qwen-VL-Max.
 Reduces API costs by ~85% by skipping empty frames.
 """
@@ -5154,7 +5154,7 @@ FILE: backend/workers/__init__.py
 FILE: backend/workers/pipeline.py
 ========================================================================
 """
-NEXUS CCTV — Celery Pipeline Workers
+Raven AI CCTV — Celery Pipeline Workers
 Background tasks: frame processing, Qwen analysis, alert dispatch.
 """
 import asyncio
@@ -5171,7 +5171,7 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 celery_app = Celery(
-    "nexus",
+    "raven",
     broker=settings.redis_url,
     backend=settings.redis_url,
     include=["backend.workers.pipeline"],
@@ -5198,7 +5198,7 @@ def run_async(coro):
         loop.close()
 
 
-@celery_app.task(name="nexus.process_frame", bind=True, max_retries=2)
+@celery_app.task(name="raven.process_frame", bind=True, max_retries=2)
 def process_frame(self, camera_id: int, image_b64: str):
     """
     Delegate CCTV frame processing to the AgentX OpenClaw Agentic Runtime.
@@ -5224,8 +5224,8 @@ import os
 import shutil
 
 src_dir = r"C:\Users\grvns\.gemini\antigravity\brain\c20edf62-5435-40a0-95db-89b5ad9bd232"
-dst_dir1 = r"C:\Users\grvns\.gemini\antigravity\scratch\nexus-cctv\demo\sample_incidents"
-dst_dir2 = r"C:\Users\grvns\.gemini\antigravity\scratch\nexus-cctv\frontend\images"
+dst_dir1 = r"C:\Users\grvns\.gemini\antigravity\scratch\Raven\demo\sample_incidents"
+dst_dir2 = r"C:\Users\grvns\.gemini\antigravity\scratch\Raven\frontend\images"
 
 os.makedirs(dst_dir1, exist_ok=True)
 os.makedirs(dst_dir2, exist_ok=True)
@@ -5252,7 +5252,7 @@ for src_name, dst_name in mapping.items():
 FILE: demo/mock_data.py
 ========================================================================
 """
-NEXUS CCTV — Demo Data Seeder
+Raven AI CCTV — Demo Data Seeder
 Populates the database with 4 cameras and 10 realistic incidents.
 Run: python demo/mock_data.py
 """
@@ -5399,7 +5399,7 @@ MOCK_INCIDENTS = [
 ]
 
 REPORTS_EN = {
-    SeverityLevel.CRITICAL: "EXECUTIVE SUMMARY\nA critical security event was detected and automatically recorded by the NEXUS AI surveillance system. Immediate SOC review and physical response are warranted.\n\nDETAILED OBSERVATIONS\nThe AI analysis identified the described threat with high confidence. All relevant scene context has been captured and logged.\n\nRECOMMENDED ACTIONS\n1. Dispatch security personnel immediately\n2. Secure the affected zone\n3. Preserve CCTV footage for forensic review\n\nLEGAL NOTES\nSHA-256 signed evidence package generated. Chain of custody intact.",
+    SeverityLevel.CRITICAL: "EXECUTIVE SUMMARY\nA critical security event was detected and automatically recorded by the Raven AI AI surveillance system. Immediate SOC review and physical response are warranted.\n\nDETAILED OBSERVATIONS\nThe AI analysis identified the described threat with high confidence. All relevant scene context has been captured and logged.\n\nRECOMMENDED ACTIONS\n1. Dispatch security personnel immediately\n2. Secure the affected zone\n3. Preserve CCTV footage for forensic review\n\nLEGAL NOTES\nSHA-256 signed evidence package generated. Chain of custody intact.",
     SeverityLevel.HIGH: "EXECUTIVE SUMMARY\nA high-priority security incident has been detected. Prompt SOC review is required.\n\nDETAILED OBSERVATIONS\nThe scene analysis flagged anomalous behavior consistent with a potential security breach or policy violation.\n\nRECOMMENDED ACTIONS\n1. Verify incident via physical patrol\n2. Check access logs for anomalies\n3. Update incident status after verification\n\nLEGAL NOTES\nEvidence logged and secured.",
     SeverityLevel.MEDIUM: "EXECUTIVE SUMMARY\nA medium-priority incident has been logged for SOC review.\n\nDETAILED OBSERVATIONS\nAnomalous activity detected that may warrant further investigation.\n\nRECOMMENDED ACTIONS\n1. Monitor the affected zone\n2. Review over the next 30 minutes\n\nLEGAL NOTES\nLog entry created.",
     SeverityLevel.LOW: "EXECUTIVE SUMMARY\nRoutine activity logged for compliance purposes. No action required.\n\nDETAILED OBSERVATIONS\nNormal operations detected within expected parameters.\n\nRECOMMENDED ACTIONS\nNo action required.\n\nLEGAL NOTES\nCompliance log entry.",
@@ -5416,14 +5416,14 @@ async def seed():
         if not existing_op.scalar_one_or_none():
             op = Operator(
                 username="admin",
-                email="admin@nexus.local",
-                hashed_password=hash_password("nexus2026"),
+                email="admin@raven.local",
+                hashed_password=hash_password("raven2026"),
                 role=OperatorRole.ADMIN,
             )
             db.add(op)
             await db.flush()
             op_id = op.id
-            print("[OK] Created operator: admin / nexus2026")
+            print("[OK] Created operator: admin / raven2026")
         else:
             op_result = await db.execute(select(Operator).where(Operator.username == "admin"))
             op_id = op_result.scalar_one().id
@@ -5544,13 +5544,13 @@ async def seed():
                         incident_id=inc.id, channel=AlertChannel.SMS,
                         recipient="+254700000000", status=AlertStatus.MOCK,
                         sent_at=ts + timedelta(seconds=15),
-                        message_preview=f"🚨 NEXUS ALERT [{inc_data['severity'].value}] — {inc_data['threat_type']}",
+                        message_preview=f"🚨 Raven AI ALERT [{inc_data['severity'].value}] — {inc_data['threat_type']}",
                     ))
                     db.add(Alert(
                         incident_id=inc.id, channel=AlertChannel.EMAIL,
-                        recipient="soc@nexus.local", status=AlertStatus.MOCK,
+                        recipient="soc@raven.local", status=AlertStatus.MOCK,
                         sent_at=ts + timedelta(seconds=20),
-                        message_preview=f"[NEXUS CCTV] {inc_data['severity'].value} Alert — {inc_data['threat_type']}",
+                        message_preview=f"[Raven AI CCTV] {inc_data['severity'].value} Alert — {inc_data['threat_type']}",
                     ))
 
             await db.commit()
@@ -5608,8 +5608,8 @@ async def seed():
         await db.commit()
         print("[OK] Cryptographic audit log seeded")
 
-    print("\n>> NEXUS CCTV demo data ready!")
-    print("   Login: admin / nexus2026")
+    print("\n>> Raven AI CCTV demo data ready!")
+    print("   Login: admin / raven2026")
     print("   Start: uvicorn backend.main:app --reload --port 8000")
     print("   Open:  http://localhost:8000\n")
 
@@ -5622,7 +5622,7 @@ if __name__ == "__main__":
 FILE: demo/simulate_camera.py
 ========================================================================
 """
-NEXUS CCTV — Camera Feed Simulator
+Raven AI CCTV — Camera Feed Simulator
 Feeds demo images into the analysis pipeline at a configurable rate.
 Simulates 1-4 simultaneous RTSP camera streams.
 
@@ -5799,7 +5799,7 @@ async def run_simulation(num_streams: int, interval: float, duration: float | No
 
 
 def main():
-    parser = argparse.ArgumentParser(description="NEXUS CCTV — Camera Feed Simulator")
+    parser = argparse.ArgumentParser(description="Raven AI CCTV — Camera Feed Simulator")
     parser.add_argument("--streams", type=int, default=4, help="Number of camera streams (default: 4)")
     parser.add_argument("--interval", type=float, default=10.0, help="Frame submission interval in seconds (default: 10)")
     parser.add_argument("--duration", type=float, default=None, help="Run duration in seconds (default: indefinite)")
@@ -5820,9 +5820,9 @@ if __name__ == "__main__":
 ========================================================================
 FILE: docs/architecture.md
 ========================================================================
-# NEXUS CCTV — Architecture & Data Flow
+# Raven AI CCTV — Architecture & Data Flow
 
-This document details the system design, hardware/software stack, and pipeline workflow of NEXUS CCTV.
+This document details the system design, hardware/software stack, and pipeline workflow of Raven AI CCTV.
 
 ## System Architecture Diagram
 
@@ -5929,7 +5929,7 @@ FILE: docs/openclaw_transition.md
 ========================================================================
 # OpenClaw Agentic Runtime & MCP Transition Specification
 
-This document details the architectural blueprint for transitioning the NEXUS CCTV project from a Celery-based task queue to a multi-layered OpenClaw agentic runtime.
+This document details the architectural blueprint for transitioning the Raven AI CCTV project from a Celery-based task queue to a multi-layered OpenClaw agentic runtime.
 
 ---
 
@@ -6018,9 +6018,9 @@ async def run_agentx_pipeline(data):
 ========================================================================
 FILE: docs/setup.md
 ========================================================================
-# NEXUS CCTV — Setup & Run Guide
+# Raven AI CCTV — Setup & Run Guide
 
-This guide details setting up, configuring, and running the NEXUS CCTV autopilot system locally or via Docker.
+This guide details setting up, configuring, and running the Raven AI CCTV autopilot system locally or via Docker.
 
 ## Prerequisites
 
@@ -6046,7 +6046,7 @@ Open `.env` and configure the settings:
 - `DEMO_MODE`: Set to `True` (default) to use mock Qwen-VL analyses and mock alert dispatchers if you do not have API keys. Set to `False` for live production API execution.
 
 ### Optional Integrations
-- **Database**: `DATABASE_URL` defaults to SQLite (`sqlite+aiosqlite:///./nexus.db`). For production, supply a PostgreSQL connection string.
+- **Database**: `DATABASE_URL` defaults to SQLite (`sqlite+aiosqlite:///./raven.db`). For production, supply a PostgreSQL connection string.
 - **Twilio (SMS)**: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `ALERT_TO_NUMBER`.
 - **SendGrid (Email)**: `SENDGRID_API_KEY`, `ALERT_FROM_EMAIL`, `ALERT_TO_EMAIL`.
 - **Alibaba Cloud OSS (Storage)**: `OSS_ACCESS_KEY_ID`, `OSS_ACCESS_KEY_SECRET`, `OSS_BUCKET_NAME`, `OSS_ENDPOINT`.
@@ -6140,10 +6140,10 @@ docker-compose up --build
 ```
 
 This starts:
-- `nexus-api` on [http://localhost:8000](http://localhost:8000)
-- `nexus-redis` on port 6379
-- `nexus-db` (Postgres database)
-- `nexus-worker` (Celery background worker)
+- `raven-api` on [http://localhost:8000](http://localhost:8000)
+- `raven-redis` on port 6379
+- `raven-db` (Postgres database)
+- `raven-worker` (Celery background worker)
 
 
 ========================================================================
@@ -7493,7 +7493,7 @@ FILE: frontend/app.js
 FILE: frontend/camera-mock.js
 ========================================================================
 /**
- * NEXUS CCTV — Client-side Tactical Camera HUD & Simulation
+ * Raven AI CCTV — Client-side Tactical Camera HUD & Simulation
  * Handles canvas HUD drawing, timestamps, scanlines, and YOLO bounding boxes.
  */
 class CameraSimulator {
@@ -7724,8 +7724,8 @@ FILE: frontend/index.html
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NEXUS CCTV — SOC Autopilot Operations</title>
-  <meta name="description" content="NEXUS CCTV - Autonomous AI-powered Security Operations Center (SOC) dashboard. Features real-time visual threat analysis, Qwen-VL analysis, multi-camera BEV homography trajectories, cryptographically hash-chained audit logs, and RF/Wi-Fi spatial intelligence device-free human mapping.">
+  <title>Raven AI CCTV — SOC Autopilot Operations</title>
+  <meta name="description" content="Raven AI CCTV - Autonomous AI-powered Security Operations Center (SOC) dashboard. Features real-time visual threat analysis, Qwen-VL analysis, multi-camera BEV homography trajectories, cryptographically hash-chained audit logs, and RF/Wi-Fi spatial intelligence device-free human mapping.">
   <!-- Leaflet.js CSS for airport map -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <!-- Chart.js for threat activity heatmap and RF sensing -->
@@ -8710,7 +8710,7 @@ FILE: frontend/index.html
 FILE: frontend/style.css
 ========================================================================
 /* ═══════════════════════════════════════════════════════════════════
-   NEXUS CCTV — Premium Slate-Teal Design System
+   Raven AI CCTV — Premium Slate-Teal Design System
    Inspired by advanced tactical radar & point-cloud dashboards
    Fonts: Inter (body) · Space Mono (data/mono)
    ═══════════════════════════════════════════════════════════════════ */

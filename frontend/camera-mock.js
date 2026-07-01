@@ -1,5 +1,5 @@
 /**
- * NEXUS CCTV — Client-side Tactical Camera HUD & Simulation
+ * Raven AI CCTV — Client-side Tactical Camera HUD & Simulation
  * Handles canvas HUD drawing, timestamps, scanlines, and YOLO bounding boxes.
  */
 class CameraSimulator {

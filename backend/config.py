@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Application Configuration
+Raven AI CCTV — Application Configuration
 Pydantic settings loaded from environment / .env file.
 """
 from functools import lru_cache
@@ -23,10 +23,10 @@ class Settings(BaseSettings):
     qwen_plus_model: str = "qwen-plus"
 
     # ── Database ─────────────────────────────────────────────────
-    database_url: str = "sqlite+aiosqlite:///./nexus.db"
+    database_url: str = "sqlite+aiosqlite:///./raven.db"
 
     # ── Security / JWT ───────────────────────────────────────────
-    secret_key: str = "nexus-dev-secret-change-in-prod"
+    secret_key: str = "raven-dev-secret-change-in-prod"
     access_token_expire_minutes: int = 480
     algorithm: str = "HS256"
 
@@ -38,13 +38,13 @@ class Settings(BaseSettings):
 
     # ── SendGrid ─────────────────────────────────────────────────
     sendgrid_api_key: str = ""
-    alert_from_email: str = "nexus@example.com"
+    alert_from_email: str = "raven@example.com"
     alert_to_email: str = "soc@example.com"
 
     # ── Alibaba Cloud OSS ────────────────────────────────────────
     oss_access_key_id: str = ""
     oss_access_key_secret: str = ""
-    oss_bucket_name: str = "nexus-cctv-evidence"
+    oss_bucket_name: str = "Raven-evidence"
     oss_endpoint: str = "https://oss-ap-southeast-1.aliyuncs.com"
 
     # ── Redis / Celery ───────────────────────────────────────────

@@ -1,17 +1,17 @@
-# NEXUS CCTV — Autonomous Security Operations
+# Raven AI CCTV — Autonomous Security Operations
 
 > **Qwen Cloud Global AI Hackathon 2026 · Track 4: Autopilot Agent**
 
 End-to-end autonomous CCTV security operations. Camera alerts → Qwen-VL-Max analysis → incident report → multi-channel notification → HITL SOC approval → law enforcement evidence handoff.
 
-![NEXUS CCTV Architecture](docs/architecture.png)
+![Raven AI CCTV Architecture](docs/architecture.png)
 
 ## 🚀 Quick Start (Demo Mode — No API Keys Required)
 
 ```bash
 # 1. Clone & enter
-git clone https://github.com/your-username/nexus-cctv
-cd nexus-cctv
+git clone https://github.com/your-username/Raven
+cd Raven
 
 # 2. Install dependencies
 pip install -r requirements.txt

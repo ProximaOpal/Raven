@@ -18,7 +18,7 @@ EXCLUDE_DIRS = {
 
 # Files to exclude specifically (like the output bundle itself)
 EXCLUDE_FILES = {
-    'nexus_cctv_all_code.txt', 'codebase.txt', 'bundle_project.py'
+    'raven_cctv_all_code.txt', 'codebase.txt', 'bundle_project.py'
 }
 
 def is_text_file(path: Path) -> bool:
@@ -32,7 +32,7 @@ def bundle_files(root_dir: Path, output_file: Path):
     count = 0
     with open(output_file, 'w', encoding='utf-8') as outfile:
         outfile.write("========================================================================\n")
-        outfile.write("NEXUS CCTV PROJECT CODEBASE BUNDLE FOR NOTEBOOK LM\n")
+        outfile.write("Raven AI CCTV PROJECT CODEBASE BUNDLE FOR NOTEBOOK LM\n")
         outfile.write(f"Generated at: {Path(output_file).name}\n")
         outfile.write("========================================================================\n\n")
         
@@ -70,5 +70,5 @@ def bundle_files(root_dir: Path, output_file: Path):
 
 if __name__ == '__main__':
     project_root = Path(__file__).parent
-    output_path = project_root / "nexus_cctv_all_code.txt"
+    output_path = project_root / "raven_cctv_all_code.txt"
     bundle_files(project_root, output_path)

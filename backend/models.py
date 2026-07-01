@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — SQLAlchemy ORM Models
+Raven AI CCTV — SQLAlchemy ORM Models
 Tables: cameras, incidents, alerts, audit_log, operators
 """
 import enum

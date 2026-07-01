@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Evidence Router
+Raven AI CCTV — Evidence Router
 GET /api/evidence/{incident_id}/download — PDF + archive download
 GET /api/evidence/{incident_id}/audit — Full audit log for incident
 """
@@ -26,7 +26,7 @@ async def download_pdf(incident_id: int, db: AsyncSession = Depends(get_db)):
     return FileResponse(
         inc.pdf_path,
         media_type="application/pdf",
-        filename=f"nexus_incident_{incident_id}_report.pdf",
+        filename=f"raven_incident_{incident_id}_report.pdf",
     )
 
 
@@ -38,7 +38,7 @@ async def download_archive(incident_id: int, db: AsyncSession = Depends(get_db))
     return FileResponse(
         inc.archive_path,
         media_type="application/zip",
-        filename=f"nexus_incident_{incident_id}_evidence.zip",
+        filename=f"raven_incident_{incident_id}_evidence.zip",
     )
 
 

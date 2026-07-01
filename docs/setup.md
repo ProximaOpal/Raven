@@ -1,6 +1,6 @@
-# NEXUS CCTV — Setup & Run Guide
+# Raven AI CCTV — Setup & Run Guide
 
-This guide details setting up, configuring, and running the NEXUS CCTV autopilot system locally or via Docker.
+This guide details setting up, configuring, and running the Raven AI CCTV autopilot system locally or via Docker.
 
 ## Prerequisites
 
@@ -26,7 +26,7 @@ Open `.env` and configure the settings:
 - `DEMO_MODE`: Set to `True` (default) to use mock Qwen-VL analyses and mock alert dispatchers if you do not have API keys. Set to `False` for live production API execution.
 
 ### Optional Integrations
-- **Database**: `DATABASE_URL` defaults to SQLite (`sqlite+aiosqlite:///./nexus.db`). For production, supply a PostgreSQL connection string.
+- **Database**: `DATABASE_URL` defaults to SQLite (`sqlite+aiosqlite:///./raven.db`). For production, supply a PostgreSQL connection string.
 - **Twilio (SMS)**: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `ALERT_TO_NUMBER`.
 - **SendGrid (Email)**: `SENDGRID_API_KEY`, `ALERT_FROM_EMAIL`, `ALERT_TO_EMAIL`.
 - **Alibaba Cloud OSS (Storage)**: `OSS_ACCESS_KEY_ID`, `OSS_ACCESS_KEY_SECRET`, `OSS_BUCKET_NAME`, `OSS_ENDPOINT`.
@@ -120,7 +120,7 @@ docker-compose up --build
 ```
 
 This starts:
-- `nexus-api` on [http://localhost:8000](http://localhost:8000)
-- `nexus-redis` on port 6379
-- `nexus-db` (Postgres database)
-- `nexus-worker` (Celery background worker)
+- `raven-api` on [http://localhost:8000](http://localhost:8000)
+- `raven-redis` on port 6379
+- `raven-db` (Postgres database)
+- `raven-worker` (Celery background worker)

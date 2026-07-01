@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — FastAPI Application Factory
+Raven AI CCTV — FastAPI Application Factory
 Entry point: uvicorn backend.main:app
 """
 import logging
@@ -103,7 +103,7 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     import asyncio
     logger.info("=" * 60)
-    logger.info("  NEXUS CCTV — Autonomous Security Operations")
+    logger.info("  Raven AI CCTV — Autonomous Security Operations")
     logger.info(f"  Demo Mode: {settings.demo_mode}")
     logger.info(f"  Qwen Model: {settings.qwen_vl_model}")
     logger.info(f"  Database: {settings.database_url[:40]}...")
@@ -129,11 +129,11 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     logger.info("OpenClaw AgentX bridge task stopped")
-    logger.info("NEXUS CCTV shutting down")
+    logger.info("Raven AI CCTV shutting down")
 
 
 app = FastAPI(
-    title="NEXUS CCTV — Autonomous Security Operations",
+    title="Raven AI CCTV — Autonomous Security Operations",
     description=(
         "End-to-end AI-powered CCTV security operations system. "
         "Camera alerts → Qwen-VL-Max analysis → incident report → "
@@ -175,7 +175,7 @@ app.include_router(rf.router)
 async def health():
     return {
         "status": "ok",
-        "service": "NEXUS CCTV",
+        "service": "Raven AI CCTV",
         "demo_mode": settings.demo_mode,
         "qwen_model": settings.qwen_vl_model,
         "version": "1.0.0",

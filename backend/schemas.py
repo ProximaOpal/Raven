@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Pydantic v2 Schemas (Request / Response models)
+Raven AI CCTV — Pydantic v2 Schemas (Request / Response models)
 """
 from datetime import datetime
 from typing import Any

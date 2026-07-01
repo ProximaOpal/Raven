@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — RF / Wi-Fi Spatial Intelligence Router
+Raven AI CCTV — RF / Wi-Fi Spatial Intelligence Router
 GET /api/rf/aps, GET /api/rf/telemetry, POST /api/rf/simulate-move
 """
 from fastapi import APIRouter, HTTPException

@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — RF / Wi-Fi Spatial Intelligence Service
+Raven AI CCTV — RF / Wi-Fi Spatial Intelligence Service
 Simulates Channel State Information (CSI) & RSSI signal disruptions from 3 indoor access points.
 Uses path-loss equations and trilateration with a Kalman filter to estimate occupant location.
 """

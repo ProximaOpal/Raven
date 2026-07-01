@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Search Router
+Raven AI CCTV — Search Router
 POST /api/search — NL query → SQL filter → incident results
 """
 from fastapi import APIRouter, Depends, HTTPException

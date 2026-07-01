@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Qwen-Plus Integration
+Raven AI CCTV — Qwen-Plus Integration
 Generates bilingual incident reports (EN + Swahili) and semantic search filters.
 """
 import json
@@ -71,11 +71,11 @@ Examples:
 
 MOCK_REPORTS = {
     "CRITICAL": {
-        "report_en": """INCIDENT REPORT — NEXUS CCTV SECURITY SYSTEM
+        "report_en": """INCIDENT REPORT — Raven AI CCTV SECURITY SYSTEM
 Classification: CRITICAL | Priority: IMMEDIATE RESPONSE REQUIRED
 
 EXECUTIVE SUMMARY
-A perimeter security breach was detected at 20:47 EAT by the NEXUS AI surveillance system. An unauthorized individual was identified crossing the northern perimeter fence at the compound's northwest access point. The NEXUS-VL AI engine assessed the threat at severity level 9.2/10 (CRITICAL) with 94% confidence.
+A perimeter security breach was detected at 20:47 EAT by the Raven AI AI surveillance system. An unauthorized individual was identified crossing the northern perimeter fence at the compound's northwest access point. The Raven AI-VL AI engine assessed the threat at severity level 9.2/10 (CRITICAL) with 94% confidence.
 
 DETAILED OBSERVATIONS
 The subject — one adult male in dark clothing carrying an unidentified bag — entered the restricted zone via a deliberate breach of the perimeter fence. Motion analysis indicates purposeful movement toward the main building. The individual did not display any visible access credentials. Behavioral pattern analysis flagged the subject's posture and movement trajectory as consistent with unauthorized intrusion intent.
@@ -88,11 +88,11 @@ RECOMMENDED ACTIONS
 
 LEGAL AND FORENSIC NOTES
 This incident has been automatically recorded with a SHA-256 signed evidence package. Chain of custody is preserved from initial detection through AI analysis. All video evidence is stored in encrypted format on Alibaba Cloud OSS. This report constitutes a formal incident record and may be submitted to law enforcement upon SOC operator approval. Evidence integrity: VERIFIED.""",
-        "report_sw": """RIPOTI YA TUKIO — MFUMO WA USALAMA WA NEXUS CCTV
+        "report_sw": """RIPOTI YA TUKIO — MFUMO WA USALAMA WA Raven AI CCTV
 Uainishaji: MUHIMU | Kipaumbele: MWITIKIO WA HARAKA UNAHITAJIKA
 
 MUHTASARI WA MKURUGENZI
-Uvunjaji wa usalama wa mipaka uligunduliwa saa 20:47 EAT na mfumo wa ufuatiliaji wa AI wa NEXUS. Mtu asiye na ruhusa alitambuliwa akivuka uzio wa mipaka ya kaskazini kwenye hatua ya upatikanaji ya kaskazini magharibi ya kiwanja. Injini ya AI ya NEXUS-VL ilitathmini tishio kwa kiwango cha ukali wa 9.2/10 (MUHIMU) kwa uhakika wa asilimia 94.
+Uvunjaji wa usalama wa mipaka uligunduliwa saa 20:47 EAT na mfumo wa ufuatiliaji wa AI wa Raven AI. Mtu asiye na ruhusa alitambuliwa akivuka uzio wa mipaka ya kaskazini kwenye hatua ya upatikanaji ya kaskazini magharibi ya kiwanja. Injini ya AI ya Raven AI-VL ilitathmini tishio kwa kiwango cha ukali wa 9.2/10 (MUHIMU) kwa uhakika wa asilimia 94.
 
 UCHUNGUZI WA KINA
 Mhusika — mtu mzima wa kiume katika mavazi ya giza akibeba mfuko usiojulikana — aliingia kwenye eneo lililozuiwa kwa njia ya kuvunja kwa makusudi uzio wa mipaka. Uchambuzi wa mwendo unaonyesha harakati za makusudi kuelekea jengo kuu. Mtu huyo hakuonyesha vitambulisho vyovyote vya upatikanaji. Uchambuzi wa mfano wa tabia uliashiria mkao na njia ya harakati ya mhusika kama inayoendana na nia ya kuingia bila ruhusa.
@@ -107,11 +107,11 @@ MAELEZO YA KISHERIA NA UCHUNGUZI
 Tukio hili limerekodiwa kiotomatiki na kifurushi cha ushahidi kilichosainiwa na SHA-256. Mlolongo wa uhifadhi umehifadhiwa kuanzia ugunduzi wa awali hadi uchambuzi wa AI. Ushahidi wote wa video umehifadhiwa katika umbizo lililofichwa kwenye Alibaba Cloud OSS. Ripoti hii inaunda rekodi rasmi ya tukio na inaweza kuwasilishwa kwa vyombo vya utekelezaji wa sheria baada ya idhini ya mwendeshaji wa SOC. Uadilifu wa ushahidi: IMETHIBITISHWA."""
     },
     "LOW": {
-        "report_en": """INCIDENT REPORT — NEXUS CCTV SECURITY SYSTEM
+        "report_en": """INCIDENT REPORT — Raven AI CCTV SECURITY SYSTEM
 Classification: LOW | Priority: LOGGED FOR RECORD
 
 EXECUTIVE SUMMARY
-Routine activity was detected and logged at 20:47 EAT. The NEXUS AI surveillance system identified two uniformed staff members conducting normal operations within an authorized zone. Threat assessment: 1.2/10 (LOW). No action required.
+Routine activity was detected and logged at 20:47 EAT. The Raven AI AI surveillance system identified two uniformed staff members conducting normal operations within an authorized zone. Threat assessment: 1.2/10 (LOW). No action required.
 
 DETAILED OBSERVATIONS
 Two individuals wearing company uniforms were observed moving through the designated staff corridor. Movement patterns are consistent with authorized shift activity. Both individuals were identified via uniform recognition as registered staff. No anomalies, restricted zone breaches, or behavioral irregularities were detected.
@@ -123,7 +123,7 @@ RECOMMENDED ACTIONS
 
 LEGAL AND FORENSIC NOTES
 Low-priority log entry. Evidence package generated for compliance purposes. Chain of custody intact. No escalation warranted.""",
-        "report_sw": """RIPOTI YA TUKIO — MFUMO WA USALAMA WA NEXUS CCTV
+        "report_sw": """RIPOTI YA TUKIO — MFUMO WA USALAMA WA Raven AI CCTV
 Uainishaji: CHINI | Kipaumbele: ILIREKODIWA KWA KUMBUKUMBU
 
 MUHTASARI

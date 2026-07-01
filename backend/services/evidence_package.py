@@ -1,5 +1,5 @@
 """
-NEXUS CCTV — Evidence Package Generation
+Raven AI CCTV — Evidence Package Generation
 Creates SHA-256 signed PDF reports and encrypted ZIP archives.
 """
 import base64
@@ -73,7 +73,7 @@ PDF_TEMPLATE = """
 <body>
 
 <div class="header">
-  <h1>NEXUS CCTV</h1>
+  <h1>Raven AI CCTV</h1>
   <div class="subtitle">SECURITY INCIDENT REPORT · FORENSIC EVIDENCE DOCUMENT</div>
 </div>
 
@@ -141,10 +141,10 @@ PDF_TEMPLATE = """
   <h2>Chain of Custody</h2>
   <table class="chain-table">
     <tr><th>Stage</th><th>Timestamp (UTC)</th><th>Actor</th><th>Action</th></tr>
-    <tr><td>Detection</td><td>{timestamp}</td><td>NEXUS-VL (AI)</td><td>Frame captured and queued for analysis</td></tr>
+    <tr><td>Detection</td><td>{timestamp}</td><td>Raven AI-VL (AI)</td><td>Frame captured and queued for analysis</td></tr>
     <tr><td>Analysis</td><td>{timestamp}</td><td>Qwen-VL-Max API</td><td>Multimodal threat classification completed</td></tr>
     <tr><td>Report</td><td>{generated_at}</td><td>Qwen-Plus API</td><td>Bilingual incident report generated</td></tr>
-    <tr><td>Evidence</td><td>{generated_at}</td><td>NEXUS System</td><td>PDF + SHA-256 signature created</td></tr>
+    <tr><td>Evidence</td><td>{generated_at}</td><td>Raven AI System</td><td>PDF + SHA-256 signature created</td></tr>
     <tr><td>Review</td><td>{reviewed_at}</td><td>{reviewer}</td><td>{review_action}</td></tr>
   </table>
 </div>
@@ -160,7 +160,7 @@ PDF_TEMPLATE = """
 </div>
 
 <div class="footer">
-  NEXUS CCTV · Autonomous Security Operations · Powered by Qwen-VL-Max (DashScope) · Alibaba Cloud ECS<br>
+  Raven AI CCTV · Autonomous Security Operations · Powered by Qwen-VL-Max (DashScope) · Alibaba Cloud ECS<br>
   Qwen Cloud Global AI Hackathon 2026 · Track 4: Autopilot Agent<br>
   This document constitutes an official forensic record.
 </div>
@@ -265,7 +265,7 @@ def _generate_pdf(incident: Incident, camera_name: str, location: str, out_path:
         html_path = out_path.with_suffix(".html")
         html_path.write_text(html)
         # Create stub PDF
-        out_path.write_bytes(b"%PDF-1.4\n% NEXUS CCTV Evidence Report\n")
+        out_path.write_bytes(b"%PDF-1.4\n% Raven AI CCTV Evidence Report\n")
 
 
 def _hash_file(path: Path) -> str:
