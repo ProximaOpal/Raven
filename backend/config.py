@@ -18,6 +18,10 @@ class Settings(BaseSettings):
 
     # ── Qwen / DashScope ────────────────────────────────────────
     dashscope_api_key: str = "demo-key"
+    # Custom workspace endpoint (optional — falls back to public DashScope)
+    dashscope_api_host: str = ""
+    dashscope_openai_base_url: str = ""   # OpenAI-compatible /compatible-mode/v1
+    dashscope_base_url: str = ""          # Native DashScope /api/v1
     qwen_vl_model: str = "qwen-vl-max"
     qwen_vl_fallback_model: str = "qwen-vl-plus"
     qwen_plus_model: str = "qwen-plus"
@@ -55,6 +59,23 @@ class Settings(BaseSettings):
     app_port: int = 8000
     debug: bool = True
     log_level: str = "INFO"
+
+    # ── Security & Integrations ──────────────────────────────────
+    openclaw_gateway_token: str = ""
+    public_dashboard_url: str = "http://127.0.0.1:8000"
+    cors_allowed_origins: list[str] = [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://raven-klqu.onrender.com",
+        # Netlify deployments (main site + preview URLs)
+        "https://cheerful-klepon-c28908.netlify.app",
+        "https://*.netlify.app",
+        "https://*.netlify.com",
+    ]
 
     # ── Evidence Storage ─────────────────────────────────────────
     evidence_store_path: str = "./evidence_store"

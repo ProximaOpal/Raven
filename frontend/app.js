@@ -1,7 +1,143 @@
 (function() {
-  const API_BASE = window.location.origin;
-  const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws/soc`;
+  const API_BASE = 'https://raven-klqu.onrender.com';
+  const WS_URL = 'wss://raven-klqu.onrender.com/ws/soc';
+
+  // Authentication State (In-Memory Module Variables)
+  let accessToken = null;
+  let refreshToken = null;
+  let isRefreshing = false;
+  let refreshQueue = [];
+
+  const originalFetch = window.fetch;
+  window.fetch = async function(url, options) {
+    options = options || {};
+    options.headers = options.headers || {};
+    
+    if (accessToken) {
+      if (options.headers instanceof Headers) {
+        options.headers.set('Authorization', `Bearer ${accessToken}`);
+      } else {
+        options.headers['Authorization'] = `Bearer ${accessToken}`;
+      }
+    }
+    
+    let response = await originalFetch(url, options);
+    
+    if (response.status === 401 && refreshToken && !url.includes('/api/auth/refresh') && !url.includes('/api/auth/login')) {
+      const refreshed = await performSilentRefresh();
+      if (refreshed) {
+        if (options.headers instanceof Headers) {
+          options.headers.set('Authorization', `Bearer ${accessToken}`);
+        } else {
+          options.headers['Authorization'] = `Bearer ${accessToken}`;
+        }
+        response = await originalFetch(url, options);
+      }
+    }
+    return response;
+  };
+
+  async function performSilentRefresh() {
+    if (isRefreshing) {
+      return new Promise((resolve) => {
+        refreshQueue.push(resolve);
+      });
+    }
+    isRefreshing = true;
+    try {
+      const resp = await originalFetch(`${API_BASE}/api/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ refresh_token: refreshToken })
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        accessToken = data.access_token;
+        refreshToken = data.refresh_token || refreshToken;
+        isRefreshing = false;
+        
+        connectWebSocket();
+        
+        const queue = [...refreshQueue];
+        refreshQueue = [];
+        queue.forEach(resolve => resolve(true));
+        return true;
+      }
+    } catch (err) {
+      console.error("Silent refresh failed:", err);
+    }
+    isRefreshing = false;
+    const queue = [...refreshQueue];
+    refreshQueue = [];
+    queue.forEach(resolve => resolve(false));
+    
+    accessToken = null;
+    refreshToken = null;
+    updateUserSessionUI();
+    showLoginModal();
+    return false;
+  }
+
+  async function logout() {
+    if (refreshToken) {
+      try {
+        await originalFetch(`${API_BASE}/api/auth/logout`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ refresh_token: refreshToken })
+        });
+      } catch (err) {
+        console.error("Server-side logout failed:", err);
+      }
+    }
+    accessToken = null;
+    refreshToken = null;
+    updateUserSessionUI();
+    connectWebSocket();
+    showToast("Session Info", "Successfully logged out.", "info");
+  }
+
+  function updateUserSessionUI(operator) {
+    const displayNameEl = document.getElementById('user-display-name');
+    const avatarEl = document.getElementById('user-avatar');
+    const btnLoginLogout = document.getElementById('btn-login-logout');
+    
+    if (operator) {
+      displayNameEl.textContent = `${operator.username} (${operator.role})`;
+      const initials = operator.username.slice(0, 2).toUpperCase();
+      avatarEl.textContent = initials;
+      btnLoginLogout.textContent = 'Logout';
+    } else {
+      displayNameEl.textContent = 'Guest (Demo)';
+      avatarEl.textContent = 'GD';
+      btnLoginLogout.textContent = 'Login';
+    }
+  }
+
+  function showLoginModal() {
+    const modal = document.getElementById('login-modal');
+    if (modal) modal.style.display = 'flex';
+  }
+
+  function hideLoginModal() {
+    const modal = document.getElementById('login-modal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#x27;')
+      .replace(/\//g, '&#x2F;');
+  }
 
   // Application State
   const state = {
@@ -12,7 +148,7 @@
     viewMode: 'ALL', // 'ALL' or 'PENDING'
     chart: null, // Threat heatmap chart (Chart.js)
     rfChart: null, // RF signal chart (Chart.js)
-    currentView: 'dashboard' // 'dashboard', 'camera', 'ledger', 'rf', 'biometrics'
+    currentView: 'dashboard' // 'dashboard', 'camera', 'ledger', 'rf', 'biometrics', 'farm-calendar', 'farm-agent', 'farm-graph'
   };
 
   // WebSocket Connection
@@ -34,6 +170,9 @@
     navBtnLedger: document.getElementById('nav-btn-ledger'),
     navBtnRf: document.getElementById('nav-btn-rf'),
     navBtnBiometrics: document.getElementById('nav-btn-biometrics'),
+    navBtnFarmCalendar: document.getElementById('nav-btn-farm-calendar'),
+    navBtnFarmAgent: document.getElementById('nav-btn-farm-agent'),
+    navBtnFarmGraph: document.getElementById('nav-btn-farm-graph'),
 
     // View Sections
     viewDashboard: document.getElementById('view-dashboard'),
@@ -41,6 +180,9 @@
     viewLedger: document.getElementById('view-ledger'),
     viewRf: document.getElementById('view-rf'),
     viewBiometrics: document.getElementById('view-biometrics'),
+    viewFarmCalendar: document.getElementById('view-farm-calendar'),
+    viewFarmAgent: document.getElementById('view-farm-agent'),
+    viewFarmGraph: document.getElementById('view-farm-graph'),
 
     // 3D Cloud Dashboard View
     btnCloudLayers: document.getElementById('btn-cloud-layers'),
@@ -128,6 +270,9 @@
     els.navBtnLedger.addEventListener('click', () => switchView('ledger'));
     els.navBtnRf.addEventListener('click', () => switchView('rf'));
     els.navBtnBiometrics.addEventListener('click', () => switchView('biometrics'));
+    els.navBtnFarmCalendar.addEventListener('click', () => switchView('farm-calendar'));
+    els.navBtnFarmAgent.addEventListener('click', () => switchView('farm-agent'));
+    els.navBtnFarmGraph.addEventListener('click', () => switchView('farm-graph'));
 
     // Verify Audit Modal Trigger
     els.btnVerifyAudit.addEventListener('click', triggerAuditVerification);
@@ -190,6 +335,69 @@
         executeSearch();
       });
     });
+
+    // Login/Logout button action
+    const btnLoginLogout = document.getElementById('btn-login-logout');
+    if (btnLoginLogout) {
+      btnLoginLogout.addEventListener('click', () => {
+        if (accessToken) {
+          logout();
+        } else {
+          showLoginModal();
+        }
+      });
+    }
+
+    // Close login modal
+    const loginModalClose = document.getElementById('login-modal-close');
+    if (loginModalClose) {
+      loginModalClose.addEventListener('click', hideLoginModal);
+    }
+
+    // Login Form Submit
+    const loginForm = document.getElementById('login-form');
+    if (loginForm) {
+      loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const usernameEl = document.getElementById('login-username');
+        const passwordEl = document.getElementById('login-password');
+        
+        try {
+          const resp = await originalFetch(`${API_BASE}/api/auth/login`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              username: usernameEl.value.trim(),
+              password: passwordEl.value
+            })
+          });
+          
+          if (resp.ok) {
+            const data = await resp.json();
+            accessToken = data.access_token;
+            refreshToken = data.refresh_token;
+            updateUserSessionUI(data.operator);
+            hideLoginModal();
+            // Clear fields
+            usernameEl.value = '';
+            passwordEl.value = '';
+            // Reconnect websocket with new token query parameter
+            connectWebSocket();
+            // Refresh dashboard data
+            refreshDashboard();
+            showToast("Authenticated", `Welcome, ${data.operator.username}!`, "low");
+          } else {
+            const errData = await resp.json();
+            showToast("Auth Failed", errData.detail || "Invalid credentials", "critical");
+          }
+        } catch (err) {
+          console.error("Login request failed:", err);
+          showToast("Network Error", "Could not connect to authentication service.", "critical");
+        }
+      });
+    }
   }
 
   // ─── VIEW MANAGER ─────────────────────────────────────────────────────────
@@ -202,6 +410,9 @@
     els.navBtnLedger.classList.remove('active');
     els.navBtnRf.classList.remove('active');
     els.navBtnBiometrics.classList.remove('active');
+    if (els.navBtnFarmCalendar) els.navBtnFarmCalendar.classList.remove('active');
+    if (els.navBtnFarmAgent) els.navBtnFarmAgent.classList.remove('active');
+    if (els.navBtnFarmGraph) els.navBtnFarmGraph.classList.remove('active');
 
     // Reset active sections
     els.viewDashboard.classList.remove('active');
@@ -209,6 +420,9 @@
     els.viewLedger.classList.remove('active');
     els.viewRf.classList.remove('active');
     els.viewBiometrics.classList.remove('active');
+    if (els.viewFarmCalendar) els.viewFarmCalendar.classList.remove('active');
+    if (els.viewFarmAgent) els.viewFarmAgent.classList.remove('active');
+    if (els.viewFarmGraph) els.viewFarmGraph.classList.remove('active');
 
     // Enable the selected view
     if (viewName === 'dashboard') {
@@ -233,6 +447,22 @@
       els.navBtnBiometrics.classList.add('active');
       els.viewBiometrics.classList.add('active');
       refreshBiometrics();
+    } else if (viewName === 'farm-calendar') {
+      if (els.navBtnFarmCalendar) els.navBtnFarmCalendar.classList.add('active');
+      if (els.viewFarmCalendar) els.viewFarmCalendar.classList.add('active');
+      if (typeof window.farmCalInit === 'function' && !window.farmCalInitialized) {
+        window.farmCalInit();
+        window.farmCalInitialized = true;
+      }
+    } else if (viewName === 'farm-agent') {
+      if (els.navBtnFarmAgent) els.navBtnFarmAgent.classList.add('active');
+      if (els.viewFarmAgent) els.viewFarmAgent.classList.add('active');
+      // open the agent overlay automatically
+      const ao = document.getElementById('agentOverlay');
+      if (ao) ao.classList.add('open');
+    } else if (viewName === 'farm-graph') {
+      if (els.navBtnFarmGraph) els.navBtnFarmGraph.classList.add('active');
+      if (els.viewFarmGraph) els.viewFarmGraph.classList.add('active');
     }
   }
 
@@ -306,18 +536,18 @@
             const item = document.createElement('div');
             item.className = 'bio-item';
             
-            const initials = p.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+            const initials = escapeHtml(p.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2));
             const avatarHtml = p.image_path 
-              ? `<img class="bio-avatar-img" src="${API_BASE}${p.image_path}" alt="${p.name}">`
+              ? `<img class="bio-avatar-img" src="${API_BASE}${escapeHtml(p.image_path)}" alt="${escapeHtml(p.name)}">`
               : `<div class="bio-avatar-placeholder">${initials}</div>`;
               
             item.innerHTML = `
               ${avatarHtml}
               <div class="bio-details">
-                <div class="bio-name">${p.name}</div>
-                <div class="bio-meta">Enrolled: ${new Date(p.created_at).toLocaleDateString()}</div>
+                <div class="bio-name">${escapeHtml(p.name)}</div>
+                <div class="bio-meta">Enrolled: ${escapeHtml(new Date(p.created_at).toLocaleDateString())}</div>
               </div>
-              <span class="bio-role-badge ${p.role}">${p.role}</span>
+              <span class="bio-role-badge ${escapeHtml(p.role)}">${escapeHtml(p.role)}</span>
             `;
             registryList.appendChild(item);
           });
@@ -461,7 +691,8 @@
       try { ws.close(); } catch(e) {}
     }
 
-    ws = new WebSocket(WS_URL);
+    const wsUrlWithAuth = accessToken ? `${WS_URL}?token=${encodeURIComponent(accessToken)}` : WS_URL;
+    ws = new WebSocket(wsUrlWithAuth);
 
     ws.onopen = () => {
       console.log('Telemetry connected.');
@@ -515,7 +746,7 @@
           } catch(e) {}
         }
         // Load frame
-        window.cameraSimulator.setFeedImage(incident.camera_id, `/api/incidents/${incident.id}/frame`);
+        window.cameraSimulator.setFeedImage(incident.camera_id, `${API_BASE}/api/incidents/${incident.id}/frame`);
       }
 
       showToast(
@@ -592,10 +823,10 @@
       item.innerHTML = `
         <span style="color: ${statusColor}; font-size: 1.1rem; flex-shrink: 0; margin-top: 2px;">${statusIcon}</span>
         <div class="bio-details" style="flex: 1;">
-          <div class="bio-name">${match.name}</div>
-          <div class="bio-meta">CAM-0${incident.camera_id} &middot; ${ts} &middot; ${confPct}% conf</div>
+          <div class="bio-name">${escapeHtml(match.name)}</div>
+          <div class="bio-meta">CAM-0${escapeHtml(incident.camera_id)} &middot; ${escapeHtml(ts)} &middot; ${escapeHtml(confPct)}% conf</div>
         </div>
-        <span class="bio-role-badge ${match.role || 'Staff'}">${match.role || 'Visitor'}</span>
+        <span class="bio-role-badge ${escapeHtml(match.role || 'Staff')}">${escapeHtml(match.role || 'Visitor')}</span>
       `;
 
       matchesList.insertBefore(item, matchesList.firstChild);
@@ -807,14 +1038,14 @@
       item.className = 'activity-item';
 
       let iconKey = 'info';
-      let text = inc.scene_description || `Activity reported on Camera #${inc.camera_id}`;
+      let text = escapeHtml(inc.scene_description) || `Activity reported on Camera #${escapeHtml(inc.camera_id)}`;
 
       if (inc.severity === 'CRITICAL') {
         iconKey = 'hazardous';
-        text = inc.threat_type ? `${inc.threat_type} detected on <strong>CAM-0${inc.camera_id}</strong>` : text;
+        text = inc.threat_type ? `${escapeHtml(inc.threat_type)} detected on <strong>CAM-0${escapeHtml(inc.camera_id)}</strong>` : text;
       } else if (inc.severity === 'HIGH' || inc.severity === 'MEDIUM') {
         iconKey = 'interruption';
-        text = inc.threat_type ? `${inc.threat_type} at <strong>CAM-0${inc.camera_id}</strong>` : text;
+        text = inc.threat_type ? `${escapeHtml(inc.threat_type)} at <strong>CAM-0${escapeHtml(inc.camera_id)}</strong>` : text;
       }
 
       // Format time elapsed
@@ -834,10 +1065,10 @@
 
       item.innerHTML = `
         <div class="activity-item-left">
-          <span class="activity-icon-wrap ${iconKey}">${ICON_SVG[iconKey]}</span>
+          <span class="activity-icon-wrap ${escapeHtml(iconKey)}">${ICON_SVG[iconKey]}</span>
           <span class="activity-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px;">${text}</span>
         </div>
-        <span class="activity-time">${timeStr}</span>
+        <span class="activity-time">${escapeHtml(timeStr)}</span>
       `;
       
       // Click to camera view + review
@@ -865,15 +1096,15 @@
       const confPercent = Math.round((inc.confidence || 0) * 100) + '%';
       
       row.innerHTML = `
-        <td style="font-family: monospace; font-weight: bold;">#${inc.id}</td>
-        <td>${timeStr}</td>
-        <td>CAM-0${inc.camera_id}</td>
-        <td>${inc.threat_type || 'None'}</td>
-        <td><span class="sev-chip ${inc.severity}">${inc.severity}</span></td>
-        <td style="font-family: monospace;">${confPercent}</td>
-        <td><span class="status-chip ${inc.status}">${inc.status}</span></td>
+        <td style="font-family: monospace; font-weight: bold;">#${escapeHtml(inc.id)}</td>
+        <td>${escapeHtml(timeStr)}</td>
+        <td>CAM-0${escapeHtml(inc.camera_id)}</td>
+        <td>${escapeHtml(inc.threat_type || 'None')}</td>
+        <td><span class="sev-chip ${escapeHtml(inc.severity)}">${escapeHtml(inc.severity)}</span></td>
+        <td style="font-family: monospace;">${escapeHtml(confPercent)}</td>
+        <td><span class="status-chip ${escapeHtml(inc.status)}">${escapeHtml(inc.status)}</span></td>
         <td>
-          <button class="action-btn" data-id="${inc.id}" style="padding: 3px 8px; font-size: 0.65rem;">Review</button>
+          <button class="action-btn" data-id="${escapeHtml(inc.id)}" style="padding: 3px 8px; font-size: 0.65rem;">Review</button>
         </td>
       `;
 
@@ -897,7 +1128,7 @@
     els.hitlPanel.classList.add('visible');
     
     // Set fields
-    els.hitlImage.src = `/api/incidents/${inc.id}/frame`;
+    els.hitlImage.src = `${API_BASE}/api/incidents/${inc.id}/frame`;
     els.hitlValCamera.textContent = `CAM-0${inc.camera_id}`;
     els.hitlValLocation.textContent = inc.camera ? inc.camera.location : `Zone ${inc.camera_id} Area`;
     els.hitlValTime.textContent = new Date(inc.timestamp).toUTCString();
@@ -930,8 +1161,8 @@
       
       els.evidencePanel.classList.add('show');
       els.evidenceHashBox.textContent = `SHA-256 FORENSIC SIGNATURE: ${inc.sha256_hash || 'calculating...'}`;
-      els.btnDownloadPdf.href = `/api/evidence/${inc.id}/pdf`;
-      els.btnDownloadZip.href = `/api/evidence/${inc.id}/archive`;
+      els.btnDownloadPdf.href = `${API_BASE}/api/evidence/${inc.id}/pdf`;
+      els.btnDownloadZip.href = `${API_BASE}/api/evidence/${inc.id}/archive`;
     }
 
     // Scroll to review panel smoothly
@@ -1006,7 +1237,8 @@
       });
 
       if (resp.ok) {
-        showToast("Success", `Incident #${incId} successfully approved.`, "low");
+        const pastTense = decision === 'approve' ? 'approved' : (decision === 'reject' ? 'rejected' : 'escalated');
+        showToast("Success", `Incident #${incId} successfully ${pastTense}.`, "low");
         refreshDashboard();
       } else {
         const data = await resp.json();
@@ -1116,13 +1348,13 @@
             
             card.innerHTML = `
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <span class="sev-chip ${inc.severity}">${inc.severity}</span>
-                <span class="status-chip ${inc.status}">${inc.status}</span>
+                <span class="sev-chip ${escapeHtml(inc.severity)}">${escapeHtml(inc.severity)}</span>
+                <span class="status-chip ${escapeHtml(inc.status)}">${escapeHtml(inc.status)}</span>
               </div>
-              <div style="font-weight:600; font-size:0.85rem; margin-bottom:4px;">${inc.threat_type || 'Unknown'}</div>
-              <div style="font-size:0.75rem; color:var(--text-secondary); line-height:1.4; margin-bottom:8px;">${inc.scene_description ? inc.scene_description.slice(0, 100) + '...' : ''}</div>
+              <div style="font-weight:600; font-size:0.85rem; margin-bottom:4px;">${escapeHtml(inc.threat_type || 'Unknown')}</div>
+              <div style="font-size:0.75rem; color:var(--text-secondary); line-height:1.4; margin-bottom:8px;">${escapeHtml(inc.scene_description ? inc.scene_description.slice(0, 100) + '...' : '')}</div>
               <div style="font-family:'Space Mono', monospace; font-size:0.65rem; color:var(--text-muted);">
-                CAM-0${inc.camera_id} &middot; ${timeStr}
+                CAM-0${escapeHtml(inc.camera_id)} &middot; ${escapeHtml(timeStr)}
               </div>
             `;
             

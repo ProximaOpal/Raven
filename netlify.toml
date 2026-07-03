@@ -1,0 +1,16 @@
+[build]
+  base    = "frontend"
+  publish = "frontend"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# SPA fallback – serves index.html for any path that doesn't match a real file
+[[redirects]]
+  from = "/*"
+  to   = "/index.html"
+  status = 200

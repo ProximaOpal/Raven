@@ -17,7 +17,7 @@ from backend.database import init_db
 from backend.routers import auth, cameras, evidence, incidents, search, ws, audit, biometrics, rf
 
 import time
-from collections import defaultdict
+from collections import OrderedDict
 import threading
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
@@ -43,15 +43,34 @@ class TokenBucket:
             return False
 
 class RateLimiter:
-    def __init__(self, capacity: int, refill_rate: float):
+    """
+    Thread-safe in-memory rate limiter using a sliding window token bucket.
+    Employs LRU-eviction via OrderedDict to cap tracked IP count and prevent memory growth.
+
+    WARNING: This implementation is in-memory and per-process only. If running
+    multiple ASGI workers or load-balanced replicas, it will not synchronize
+    limits across processes. In production, this should be replaced with a
+    Redis-backed rate limiter (e.g., using fastapi-limiter or custom Redis Lua script).
+    """
+    def __init__(self, capacity: int, refill_rate: float, max_tracked_ips: int = 10000):
         self.capacity = capacity
         self.refill_rate = refill_rate
-        self.buckets = defaultdict(lambda: TokenBucket(capacity, refill_rate))
+        self.max_tracked_ips = max_tracked_ips
+        self.buckets = OrderedDict()
         self.lock = threading.Lock()
 
     def is_allowed(self, ip: str) -> bool:
         with self.lock:
-            bucket = self.buckets[ip]
+            if ip in self.buckets:
+                # Move to end to mark as most recently used
+                self.buckets.move_to_end(ip)
+                bucket = self.buckets[ip]
+            else:
+                # Evict oldest entry (first item) if limit reached
+                if len(self.buckets) >= self.max_tracked_ips:
+                    self.buckets.popitem(last=False)
+                bucket = TokenBucket(self.capacity, self.refill_rate)
+                self.buckets[ip] = bucket
         return bucket.consume()
 
 auth_limiter = RateLimiter(capacity=10, refill_rate=0.2)
@@ -65,9 +84,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self' 'unsafe-inline' 'unsafe-eval' https://fonts.googleapis.com https://fonts.gstatic.com https://cdn.jsdelivr.net; "
+            "default-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; "
+            "script-src 'self' https://cdn.jsdelivr.net https://unpkg.com https://esm.sh; "
             "img-src * data: blob:; "
-            "connect-src * ws: wss:;"
+            "connect-src 'self' ws: wss: https://raven-klqu.onrender.com https://*.netlify.app https://*.netlify.com;"
         )
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         return response
@@ -102,6 +123,12 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     import asyncio
+    
+    # Lifespan security check for production environments
+    if not settings.demo_mode and settings.secret_key == "raven-dev-secret-change-in-prod":
+        logger.critical("CRITICAL: secret_key is set to the default dev value outside DEMO_MODE. Refusing to start.")
+        raise RuntimeError("Refusing to start: Default dev secret_key is not permitted in production.")
+
     logger.info("=" * 60)
     logger.info("  Raven AI CCTV — Autonomous Security Operations")
     logger.info(f"  Demo Mode: {settings.demo_mode}")
@@ -151,7 +178,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -223,3 +250,7 @@ if frontend_path.exists():
     @app.get("/", include_in_schema=False)
     async def serve_frontend():
         return FileResponse(str(frontend_path / "index.html"))
+
+    @app.get("/farmer-calendar", include_in_schema=False)
+    async def serve_farmer_calendar():
+        return FileResponse(str(frontend_path / "farmer-calendar.html"))
