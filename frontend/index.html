@@ -12,7 +12,7 @@
   <!-- Leaflet.js for interactive airport map -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- Design System CSS -->
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="style.css">
 
   <!-- Inline SVG icon definitions (reusable symbols, no CDN needed) -->
   <svg style="display:none" xmlns="http://www.w3.org/2000/svg">
@@ -188,6 +188,33 @@
         <polyline points="14 2 14 8 20 8"/>
         <line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/>
       </symbol>
+      <!-- Farm Calendar -->
+      <symbol id="ico-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+        <line x1="16" y1="2" x2="16" y2="6"/>
+        <line x1="8" y1="2" x2="8" y2="6"/>
+        <line x1="3" y1="10" x2="21" y2="10"/>
+        <path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/>
+      </symbol>
+      <!-- Microphone / Agent -->
+      <symbol id="ico-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z" fill="currentColor" stroke="none" opacity="0.7"/>
+        <path d="M17 11a5 5 0 0 1-10 0"/>
+        <line x1="12" y1="16" x2="12" y2="19"/>
+        <line x1="9" y1="19" x2="15" y2="19"/>
+      </symbol>
+      <!-- Knowledge Graph -->
+      <symbol id="ico-kgraph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <circle cx="12" cy="12" r="3"/>
+        <circle cx="4" cy="6" r="2"/>
+        <circle cx="20" cy="6" r="2"/>
+        <circle cx="4" cy="18" r="2"/>
+        <circle cx="20" cy="18" r="2"/>
+        <line x1="6" y1="7" x2="10" y2="11"/>
+        <line x1="18" y1="7" x2="14" y2="11"/>
+        <line x1="6" y1="17" x2="10" y2="13"/>
+        <line x1="18" y1="17" x2="14" y2="13"/>
+      </symbol>
       <!-- Sort arrows -->
       <symbol id="ico-sort" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M7 15l5 5 5-5M7 9l5-5 5 5"/>
@@ -230,6 +257,15 @@
       <div class="nav-item" id="nav-btn-rf" data-tooltip="RF Spatial Sensing">
         <svg class="sidebar-icon"><use href="#ico-rf"/></svg>
       </div>
+      <div class="nav-item" id="nav-btn-farm-calendar" data-tooltip="Farm Calendar">
+        <svg class="sidebar-icon"><use href="#ico-calendar"/></svg>
+      </div>
+      <div class="nav-item" id="nav-btn-farm-agent" data-tooltip="Voice Agent">
+        <svg class="sidebar-icon"><use href="#ico-mic"/></svg>
+      </div>
+      <div class="nav-item" id="nav-btn-farm-graph" data-tooltip="Knowledge Graph">
+        <svg class="sidebar-icon"><use href="#ico-kgraph"/></svg>
+      </div>
     </nav>
 
     <div class="nav-bottom">
@@ -267,10 +303,11 @@
         <span class="icon-badge"></span>
       </button>
 
-      <!-- User Profile -->
-      <div class="user-profile">
-        <span class="user-name">Christopher Summer</span>
-        <div class="user-avatar-fallback">CS</div>
+      <!-- User Profile & Login/Logout -->
+      <div class="user-profile" id="user-profile-section">
+        <span class="user-name" id="user-display-name">Guest (Demo)</span>
+        <div class="user-avatar-fallback" id="user-avatar">GD</div>
+        <button id="btn-login-logout" class="action-btn" style="margin-left: 10px; padding: 4px 10px; font-size: 0.75rem;">Login</button>
       </div>
     </div>
   </header>
@@ -945,6 +982,350 @@
       </div>
     </section>
 
+    <!-- ── SECTION: FARM CALENDAR ─────────────────────────────────── -->
+    <section class="view-section" id="view-farm-calendar" style="background:#0a0a0a;padding:40px 20px;min-height:100vh;display:none;flex-direction:column;align-items:center;justify-content:flex-start;">
+      <style>
+        #view-farm-calendar.active{display:flex!important;}
+        .fc-container{display:flex;flex-direction:column;align-items:center;gap:24px;width:100%;max-width:544px;}
+        .fc-nav-row{width:100%;display:flex;align-items:center;justify-content:center;position:relative;}
+        .fc-nav{display:flex;align-items:center;gap:16px;}
+        .fc-nav-btn{background:#1c1c1c;border:none;border-radius:10px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s;flex-shrink:0;}
+        .fc-nav-btn:hover{background:#2c2c2c;}
+        .fc-nav-month{font-size:17px;font-weight:600;color:#fff;letter-spacing:.01em;min-width:190px;text-align:center;}
+        .fc-today-btn{background:#1c1c1c;border:none;border-radius:10px;padding:7px 14px;color:#8a8a8a;font-size:13px;font-family:inherit;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap;}
+        .fc-today-btn:hover{background:#2c2c2c;color:#fff;}
+        .fc-cal-wrap{width:100%;}
+        .fc-cal-headers{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:5px;}
+        .fc-col-header{height:34px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#555;letter-spacing:.08em;text-transform:uppercase;}
+        .fc-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;}
+        .fc-day-cell{position:relative;aspect-ratio:1/1;min-width:0;background:#1c1c1c;border-radius:14px;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:8px 6px 7px;border:none;cursor:pointer;transition:background .12s,transform .1s;outline:none;-webkit-tap-highlight-color:transparent;overflow:hidden;}
+        .fc-day-cell:hover{background:#272727;transform:scale(1.03);}
+        .fc-day-cell:active{transform:scale(.97);background:#303030;}
+        .fc-day-cell.fc-empty{background:transparent;cursor:default;pointer-events:none;}
+        .fc-day-cell.fc-today{background:#262626;}
+        .fc-day-cell.fc-today::after{content:'';position:absolute;inset:0;border-radius:14px;border:1.5px solid #444;pointer-events:none;}
+        .fc-day-cell.fc-selected{background:#2a2a2a;}
+        .fc-day-cell.fc-selected::after{content:'';position:absolute;inset:0;border-radius:14px;border:1.5px solid #666;pointer-events:none;}
+        .fc-day-icon-wrap{width:36px;height:36px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:9px;overflow:hidden;}
+        .fc-day-icon-wrap svg{display:block;width:36px;height:36px;}
+        .fc-day-icon-spacer{width:36px;height:36px;flex-shrink:0;}
+        .fc-day-num{font-size:15px;font-weight:500;color:#c8c8c8;line-height:1;text-align:center;flex-shrink:0;}
+        .fc-day-cell.fc-today .fc-day-num{font-weight:700;color:#fff;}
+        .fc-day-cell.fc-other-month{background:transparent;pointer-events:none;}
+        .fc-day-cell.fc-other-month .fc-day-num{color:#333;}
+        .fc-day-cell.fc-other-month .fc-day-icon-wrap{opacity:0;}
+        .fc-day-dot{position:absolute;top:6px;right:6px;width:6px;height:6px;border-radius:50%;flex-shrink:0;}
+        .fc-dot-red{background:#e5392d;}.fc-dot-teal{background:#2dbba0;}.fc-dot-pink{background:#e03f8e;}.fc-dot-blue{background:#4a9eff;}.fc-dot-amber{background:#f5a623;}
+        .fc-legend-bar{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;}
+        .fc-legend-item{display:flex;align-items:center;gap:6px;font-size:12px;color:#555;}
+        .fc-legend-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+        .fc-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:500;align-items:center;justify-content:center;backdrop-filter:blur(6px);}
+        .fc-modal-overlay.open{display:flex;}
+        .fc-modal{background:#1a1a1a;border-radius:20px;border:1px solid #2e2e2e;padding:24px;width:300px;max-width:90vw;position:relative;animation:fcPop .18s ease;}
+        @keyframes fcPop{from{transform:scale(.92);opacity:0}to{transform:scale(1);opacity:1}}
+        .fc-modal-close{position:absolute;top:14px;right:14px;background:#2a2a2a;border:none;border-radius:50%;width:28px;height:28px;color:#888;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .12s,color .12s;line-height:1;}
+        .fc-modal-close:hover{background:#333;color:#fff;}
+        .fc-modal-date{font-size:13px;color:#666;margin-bottom:4px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;}
+        .fc-modal-day-num{font-size:36px;font-weight:700;color:#fff;line-height:1;margin-bottom:16px;}
+        .fc-modal-subs{display:flex;flex-direction:column;gap:10px;}
+        .fc-modal-sub-item{display:flex;align-items:center;gap:12px;background:#222;border-radius:12px;padding:10px 12px;}
+        .fc-modal-sub-icon{width:36px;height:36px;border-radius:8px;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+        .fc-modal-sub-icon svg{display:block;width:36px;height:36px;}
+        .fc-modal-sub-info{flex:1;min-width:0;}
+        .fc-modal-sub-name{font-size:14px;font-weight:600;color:#e0e0e0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .fc-modal-sub-desc{font-size:12px;color:#666;margin-top:1px;}
+        .fc-modal-empty{color:#444;font-size:14px;text-align:center;padding:20px 0 4px;}
+      </style>
+
+      <div class="fc-container">
+        <div class="fc-nav-row">
+          <div class="fc-nav">
+            <button class="fc-nav-btn" id="fcPrevBtn" aria-label="Previous month">
+              <svg width="10" height="16" viewBox="0 0 10 16" fill="none"><path d="M8 2L2 8L8 14" stroke="#888" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <span class="fc-nav-month" id="fcNavMonth"></span>
+            <button class="fc-nav-btn" id="fcNextBtn" aria-label="Next month">
+              <svg width="10" height="16" viewBox="0 0 10 16" fill="none"><path d="M2 2L8 8L2 14" stroke="#888" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="fc-today-btn" id="fcTodayBtn">Today</button>
+          </div>
+        </div>
+        <div class="fc-cal-wrap">
+          <div class="fc-cal-headers">
+            <div class="fc-col-header">MON</div><div class="fc-col-header">TUE</div>
+            <div class="fc-col-header">WED</div><div class="fc-col-header">THU</div>
+            <div class="fc-col-header">FRI</div><div class="fc-col-header">SAT</div>
+            <div class="fc-col-header">SUN</div>
+          </div>
+          <div class="fc-cal-grid" id="fcCalGrid"></div>
+        </div>
+        <div class="fc-legend-bar" id="fcLegendBar"></div>
+      </div>
+
+      <!-- Day Modal -->
+      <div class="fc-modal-overlay" id="fcModalOverlay" role="dialog" aria-modal="true">
+        <div class="fc-modal">
+          <button class="fc-modal-close" id="fcModalClose" aria-label="Close">&#x2715;</button>
+          <div class="fc-modal-date" id="fcModalDate"></div>
+          <div class="fc-modal-day-num" id="fcModalDayNum"></div>
+          <div class="fc-modal-subs" id="fcModalSubs"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── SECTION: VOICE AGENT ───────────────────────────────────── -->
+    <section class="view-section" id="view-farm-agent" style="display:none;background:#0a0a0a;min-height:100vh;align-items:center;justify-content:center;">
+      <style>#view-farm-agent.active{display:flex!important;}</style>
+      <div class="agent-panel" style="position:relative;animation:none;">
+        <div class="agent-header">
+          <div class="orb-wrap" id="orb2">
+            <svg class="orb-icon" viewBox="0 0 24 24" fill="none">
+              <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z" fill="#fff"/>
+              <path d="M17 11a5 5 0 0 1-10 0" stroke="#fff" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+              <path d="M12 16v3" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="agent-name">Voice Assistant</div>
+          <div class="status" id="st2">Tap orb or press Start call</div>
+        </div>
+        <div class="agent-controls">
+          <button class="ctrl-btn call" id="bCall2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6.6 10.8a15.4 15.4 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11.4 11.4 0 0 0 .57 3.6 1 1 0 0 1-.25 1z" fill="#cdf5dd"/></svg>
+            Start call
+          </button>
+          <button class="ctrl-btn mute" id="bMute2" style="display:none;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" id="micIco2"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.93V20H9v2h6v-2h-2v-2.07A7 7 0 0 0 19 11h-2z" fill="#ddd"/></svg>
+            <span id="muteLabel2">Mute</span>
+          </button>
+          <button class="ctrl-btn end" id="bEnd2" style="display:none;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 9c-2.5 0-4.9.4-7.1 1.2a1 1 0 0 0-.6 1.1l.6 2.9a1 1 0 0 0 1.1.8c1-.13 2-.2 3-.2l.5-2a1 1 0 0 1 .8-.7 9 9 0 0 1 3.4 0 1 1 0 0 1 .8.7l.5 2c1 0 2 .07 3 .2a1 1 0 0 0 1.1-.8l.6-2.9a1 1 0 0 0-.6-1.1A19 19 0 0 0 12 9z" fill="#ffd9d9"/></svg>
+            End
+          </button>
+          <button class="ctrl-btn chat" id="bChat2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 4h16v12H7l-3 3V4z" stroke="#ddd" stroke-width="1.6" fill="none" stroke-linejoin="round"/></svg>
+            Chat
+          </button>
+        </div>
+        <div class="agent-divider"></div>
+        <div class="chat-overlay" id="chatOverlay2">
+          <div class="chat-header"><div class="chat-dot" id="cDot2"></div><span>Text chat with the agent</span></div>
+          <div class="chat-msgs" id="cMsgs2"></div>
+          <div class="chat-input-row">
+            <input class="chat-input" id="cIn2" type="text" placeholder="Type a message…" autocomplete="off"/>
+            <button class="chat-send" id="cSend2" aria-label="Send">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 11l18-8-8 18-2-8-8-2z" fill="#fff"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── SECTION: KNOWLEDGE GRAPH ──────────────────────────────── -->
+    <section class="view-section" id="view-farm-graph" style="display:none;background:#474749;color:#f3f1ec;min-height:100vh;overflow-y:auto;font-family:'Oswald',sans-serif;">
+      <style>
+        #view-farm-graph.active{display:block!important;}
+        @import url('https://fonts.googleapis.com/css2?family=Bitter:wght@400;700;800;900&family=Oswald:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+        .kgraph-header{padding:44px 50px 18px;}
+        .kgraph-bar{width:230px;height:30px;background:#fcaf45;margin-bottom:18px;}
+        .kgraph-title{font-family:'Bitter',serif;font-weight:800;font-size:58px;line-height:1.02;color:#f3f1ec;margin:0 0 16px;letter-spacing:-.5px;}
+        .kgraph-deck{font-size:13.5px;line-height:1.65;color:#cfcdc8;max-width:430px;font-weight:400;letter-spacing:.1px;font-family:'Oswald',sans-serif;}
+        .kgraph-toolbar{display:flex;align-items:center;gap:12px;padding:0 50px 16px;flex-wrap:wrap;}
+        .kgt-btn{background:#3a3a3c;border:1px solid #525254;border-radius:10px;padding:8px 14px;color:#e3e1db;font-size:12px;font-family:'JetBrains Mono',monospace;letter-spacing:.3px;cursor:pointer;transition:background .15s,border-color .15s,color .15s;white-space:nowrap;}
+        .kgt-btn:hover{background:#4a4a4c;border-color:#888;color:#fff;}
+        .kgt-btn.active{background:#fcaf45;border-color:#fcaf45;color:#1a1a1a;font-weight:600;}
+        .kgt-sep{width:1px;height:28px;background:#525254;flex-shrink:0;}
+        .kgt-label{font-size:11px;color:#888;font-family:'JetBrains Mono',monospace;letter-spacing:.4px;}
+        .kgt-range{-webkit-appearance:none;appearance:none;width:120px;height:4px;background:#3a3a3c;border-radius:2px;outline:none;cursor:pointer;}
+        .kgt-range::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#fcaf45;cursor:pointer;}
+        .kgraph-zone{position:relative;width:100%;display:flex;justify-content:center;margin-top:-10px;cursor:crosshair;user-select:none;}
+        .kgraph-svg{width:100%;max-width:900px;height:auto;overflow:visible;}
+        .kgraph-hud{background:#141414;border:1px solid #2a2a2a;border-radius:14px;padding:10px 20px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#666;letter-spacing:.3px;pointer-events:none;white-space:nowrap;transition:opacity .3s;opacity:1;margin:0 auto;text-align:center;width:fit-content;margin-top:12px;}
+        .kgraph-hud span{color:#fcaf45;}
+        .kgraph-info-panel{position:fixed;right:0;top:0;bottom:0;width:0;background:#141414;border-left:1px solid #2a2a2a;z-index:450;overflow:hidden;transition:width .3s ease;display:flex;flex-direction:column;font-family:'JetBrains Mono',monospace;}
+        .kgraph-info-panel.open{width:280px;}
+        .kgraph-panel-inner{padding:24px 20px;overflow-y:auto;flex:1;}
+        #kg-tooltip{position:fixed;z-index:600;background:#141414;border:1px solid #3a3a3c;border-radius:10px;padding:10px 14px;pointer-events:none;opacity:0;transition:opacity .15s;font-family:'JetBrains Mono',monospace;font-size:11px;color:#e3e1db;box-shadow:0 6px 28px rgba(0,0,0,.6);max-width:200px;}
+        #kg-tooltip.show{opacity:1;}
+        #kg-tooltip .tt-title{font-weight:600;font-size:12px;margin-bottom:4px;}
+        #kg-tooltip .tt-sub{color:#888;font-size:10px;}
+        #kg-tooltip .tt-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle;}
+        .kg-sel-badge{position:fixed;top:24px;right:24px;z-index:500;background:#fcaf45;border-radius:10px;padding:6px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#1a1a1a;font-weight:700;letter-spacing:.3px;display:none;}
+        .kg-sel-badge.show{display:block;}
+        .kgraph-stats{margin-top:38px;padding:0 50px 60px;display:grid;grid-template-columns:1.55fr 1.7fr 1.45fr;gap:0;}
+        .kg-stat-section{border-top:2px dotted #9c8350;padding-top:8px;}
+        .kg-stat-section+.kg-stat-section{margin-left:26px;padding-left:26px;border-left:1px solid rgba(255,255,255,.08);}
+        .kg-stat-section h4{font-family:'Bitter',serif;font-weight:800;font-size:17px;color:#c9a24a;margin:0 0 16px;}
+        .kg-stat-num{font-family:'Bitter',serif;font-weight:800;font-size:34px;line-height:1;color:#f3f1ec;display:block;margin-bottom:2px;}
+        .kg-stat-label{font-family:'Oswald',sans-serif;font-weight:600;font-size:11.5px;text-transform:uppercase;color:#e3e1db;letter-spacing:.2px;margin-bottom:6px;display:block;}
+        .kg-stat-copy{font-size:9.6px;line-height:1.55;color:#a8a6a1;font-family:'Oswald',sans-serif;font-weight:300;}
+        .kg-stat-cols{display:grid;gap:18px 16px;}
+        .kg-cols-2{grid-template-columns:1fr 1fr;}
+        .kg-cols-3{grid-template-columns:1fr .9fr .9fr;}
+        .kg-cols-4{grid-template-columns:.85fr .7fr;}
+        .kg-stat-block{padding-bottom:6px;}
+      </style>
+
+      <div class="kgraph-header">
+        <div class="kgraph-bar"></div>
+        <h1 class="kgraph-title">Mapping<br>the graph</h1>
+        <p class="kgraph-deck">Click nodes, dots, or spokes to illuminate data pathways. Hold Shift to multi-select. Use the toolbar to filter by domain or trigger wave animations across the network.</p>
+      </div>
+
+      <div class="kgraph-toolbar">
+        <span class="kgt-label">FILTER</span>
+        <button class="kgt-btn active" data-kgdomain="all">ALL</button>
+        <button class="kgt-btn" data-kgdomain="cms" style="color:#1e968a;">VERTEX</button>
+        <button class="kgt-btn" data-kgdomain="atlas" style="color:#81c675;">SCHEMA</button>
+        <button class="kgt-btn" data-kgdomain="lhcb" style="color:#fcaf45;">SIGNAL</button>
+        <button class="kgt-btn" data-kgdomain="alice" style="color:#14aae1;">STREAM</button>
+        <div class="kgt-sep"></div>
+        <span class="kgt-label">ANIMATE</span>
+        <button class="kgt-btn" id="kg-btn-wave">WAVE PULSE</button>
+        <button class="kgt-btn" id="kg-btn-spiral">SPIRAL SWEEP</button>
+        <button class="kgt-btn" id="kg-btn-cascade">CASCADE</button>
+        <div class="kgt-sep"></div>
+        <span class="kgt-label">GLOW</span>
+        <input type="range" class="kgt-range" id="kgGlowSlider" min="0" max="10" value="5" step="1">
+        <button class="kgt-btn" id="kg-btn-clear">CLEAR</button>
+      </div>
+
+      <div class="kgraph-zone" id="kgGraphZone">
+        <svg viewBox="-340 -300 680 620" class="kgraph-svg" id="kgMainSvg" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <filter id="kg-line-glow" x="-60%" y="-60%" width="220%" height="220%">
+              <feGaussianBlur stdDeviation="2.5" result="blur1"/>
+              <feMerge><feMergeNode in="blur1"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <marker id="kg-arrowhead" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+              <path d="M0 0 L6 3 L0 6 Z" fill="#fcaf45" opacity=".7"/>
+            </marker>
+          </defs>
+          <circle cx="0" cy="0" r="80" fill="rgba(243,241,236,0.05)" style="animation:ambientGlow 4s ease-in-out infinite alternate;"/>
+          <circle cx="0" cy="0" r="266" fill="none" stroke="rgba(255,255,255,.18)" stroke-width="1"/>
+          <g class="kg-ring-layer">
+            <path d="M -181.00 -209.69 A 277.00 277.00 0 0 1 188.21 -203.24" fill="none" stroke="#81c675" stroke-width="18px" stroke-linecap="round"/>
+            <path d="M 203.24 -188.21 A 277.00 277.00 0 0 1 272.62 -49.05" fill="none" stroke="#14aae1" stroke-width="18px" stroke-linecap="round"/>
+            <path d="M 275.58 -27.99 A 277.00 277.00 0 0 1 -205.20 186.07" fill="none" stroke="#fcaf45" stroke-width="18px" stroke-linecap="round"/>
+            <path d="M -218.87 169.78 A 277.00 277.00 0 0 1 -264.61 81.91" fill="none" stroke="#8a8a8c" stroke-width="18px" stroke-linecap="round"/>
+            <path d="M -270.12 61.37 A 277.00 277.00 0 0 1 -196.55 -195.18" fill="none" stroke="#1e968a" stroke-width="18px" stroke-linecap="round"/>
+          </g>
+          <g font-family="'JetBrains Mono',monospace" font-size="5.5" letter-spacing=".3">
+            <text x="5" y="-293" text-anchor="middle" fill="#81c675" font-size="6" font-weight="600">SCHEMA · 48%</text>
+            <text x="255" y="-140" text-anchor="start" fill="#14aae1" font-size="6" font-weight="600">STREAM · 13%</text>
+            <text x="-298" y="100" text-anchor="end" fill="#fcaf45" font-size="6" font-weight="600">SIGNAL · 25%</text>
+            <text x="-288" y="40" text-anchor="end" fill="#d9dbda" font-size="5.5" font-weight="600">MULTI · 6%</text>
+            <text x="-245" y="-215" text-anchor="end" fill="#1e968a" font-size="6" font-weight="600">VERTEX · 8%</text>
+          </g>
+          <g class="kg-pipeline-layer">
+            <line x1="-300" y1="-9" x2="-46" y2="-9" stroke="#1e968a" stroke-width="2.4"/>
+            <line x1="-300" y1="-3" x2="-46" y2="-3" stroke="#fcaf45" stroke-width="2.4"/>
+            <line x1="-300" y1="3" x2="-46" y2="3" stroke="#d9dbda" stroke-width="2.4"/>
+            <line x1="-300" y1="9" x2="-46" y2="9" stroke="#14aae1" stroke-width="2.4"/>
+            <line x1="-300" y1="-9" x2="-46" y2="-9" stroke="#1e968a" stroke-width="1.2" opacity=".4" stroke-dasharray="6 10" style="animation:pipelineFlow 2.5s linear infinite;"/>
+            <line x1="-300" y1="-3" x2="-46" y2="-3" stroke="#fcaf45" stroke-width="1.2" opacity=".4" stroke-dasharray="6 10" style="animation:pipelineFlow 2.5s linear infinite;animation-delay:.4s"/>
+            <line x1="-300" y1="3" x2="-46" y2="3" stroke="#d9dbda" stroke-width="1.2" opacity=".3" stroke-dasharray="6 10" style="animation:pipelineFlow 2.5s linear infinite;animation-delay:.8s"/>
+            <line x1="-300" y1="9" x2="-46" y2="9" stroke="#14aae1" stroke-width="1.2" opacity=".4" stroke-dasharray="6 10" style="animation:pipelineFlow 2.5s linear infinite;animation-delay:1.2s"/>
+          </g>
+          <g class="kg-link-layer" id="kgLinkLayer">
+            <line x1="-21.60" y1="-40.62" x2="-45.07" y2="-84.76" stroke="#81c675" stroke-width="1.1" opacity=".95" data-hub="h0"/>
+            <line x1="-6.40" y1="-45.55" x2="-13.36" y2="-95.07" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h1"/>
+            <line x1="9.56" y1="-44.99" x2="19.96" y2="-93.90" stroke="#81c675" stroke-width="1.1" opacity=".95" data-hub="h2"/>
+            <line x1="24.38" y1="-39.01" x2="50.87" y2="-81.41" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h3"/>
+            <line x1="34.18" y1="-30.78" x2="71.34" y2="-64.24" stroke="#1e968a" stroke-width="1.1" opacity=".95" data-hub="h4"/>
+            <line x1="40.62" y1="-21.60" x2="84.76" y2="-45.07" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h5"/>
+            <line x1="44.43" y1="-11.91" x2="92.73" y2="-24.85" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h6"/>
+            <line x1="45.89" y1="-3.21" x2="53.63" y2="-3.75" stroke="#81c675" stroke-width="1.1" opacity=".95" data-hub="h7"/>
+            <line x1="45.55" y1="6.40" x2="77.95" y2="10.96" stroke="#fcaf45" stroke-width="1.1" opacity=".95" data-hub="h8"/>
+            <line x1="43.23" y1="15.73" x2="90.21" y2="32.83" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h9"/>
+            <line x1="38.14" y1="25.72" x2="79.59" y2="53.68" stroke="#1e968a" stroke-width="1.1" opacity=".95" data-hub="h10"/>
+            <line x1="30.78" y1="34.18" x2="64.24" y2="71.34" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h11"/>
+            <line x1="20.17" y1="41.34" x2="42.08" y2="86.28" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h12"/>
+            <line x1="6.40" y1="45.55" x2="13.36" y2="95.07" stroke="#81c675" stroke-width="1.1" opacity=".95" data-hub="h13"/>
+            <line x1="-9.56" y1="44.99" x2="-19.96" y2="93.90" stroke="#1e968a" stroke-width="1.1" opacity=".95" data-hub="h14"/>
+            <line x1="-24.38" y1="39.01" x2="-50.87" y2="81.41" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h15"/>
+          </g>
+          <g class="kg-node-layer" id="kgNodeLayer">
+            <circle cx="-45.07" cy="-84.76" r="7.2" fill="#474749" stroke="#81c675" stroke-width="2.4" data-hub="h0" data-domain="atlas" data-name="EU-WEST CLUSTER" style="cursor:pointer;"/>
+            <circle cx="-45.07" cy="-84.76" r="3.6" fill="#81c675" data-hub="h0" data-domain="atlas"/>
+            <circle cx="-13.36" cy="-95.07" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h1" data-domain="core" data-name="MULTI-DOMAIN AGG." style="cursor:pointer;"/>
+            <circle cx="-13.36" cy="-95.07" r="3.6" fill="#d9dbda" data-hub="h1" data-domain="core"/>
+            <circle cx="19.96" cy="-93.90" r="7.2" fill="#474749" stroke="#81c675" stroke-width="2.4" data-hub="h2" data-domain="atlas" data-name="APAC CLUSTER" style="cursor:pointer;"/>
+            <circle cx="19.96" cy="-93.90" r="3.6" fill="#81c675" data-hub="h2" data-domain="atlas"/>
+            <circle cx="50.87" cy="-81.41" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h3" data-domain="core" data-name="EDGE CACHE RING N" style="cursor:pointer;"/>
+            <circle cx="50.87" cy="-81.41" r="3.6" fill="#d9dbda" data-hub="h3" data-domain="core"/>
+            <circle cx="71.34" cy="-64.24" r="7.2" fill="#474749" stroke="#1e968a" stroke-width="2.4" data-hub="h4" data-domain="cms" data-name="VERTEX REPL. NODE" style="cursor:pointer;"/>
+            <circle cx="71.34" cy="-64.24" r="3.6" fill="#1e968a" data-hub="h4" data-domain="cms"/>
+            <circle cx="84.76" cy="-45.07" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h5" data-domain="core" data-name="SCHEMA VALID. POOL" style="cursor:pointer;"/>
+            <circle cx="84.76" cy="-45.07" r="3.6" fill="#d9dbda" data-hub="h5" data-domain="core"/>
+            <circle cx="92.73" cy="-24.85" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h6" data-domain="core" data-name="INDEX SHARD GRP A" style="cursor:pointer;"/>
+            <circle cx="92.73" cy="-24.85" r="3.6" fill="#d9dbda" data-hub="h6" data-domain="core"/>
+            <circle cx="53.63" cy="-3.75" r="7.2" fill="#474749" stroke="#81c675" stroke-width="2.4" data-hub="h7" data-domain="atlas" data-name="NORDIC EDGE" style="cursor:pointer;"/>
+            <circle cx="53.63" cy="-3.75" r="3.6" fill="#81c675" data-hub="h7" data-domain="atlas"/>
+            <circle cx="77.95" cy="10.96" r="7.2" fill="#474749" stroke="#fcaf45" stroke-width="2.4" data-hub="h8" data-domain="lhcb" data-name="SIGNAL RELAY UK" style="cursor:pointer;"/>
+            <circle cx="77.95" cy="10.96" r="3.6" fill="#fcaf45" data-hub="h8" data-domain="lhcb"/>
+            <circle cx="90.21" cy="32.83" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h9" data-domain="core" data-name="INDEX SHARD GRP B" style="cursor:pointer;"/>
+            <circle cx="90.21" cy="32.83" r="3.6" fill="#d9dbda" data-hub="h9" data-domain="core"/>
+            <circle cx="79.59" cy="53.68" r="7.2" fill="#474749" stroke="#1e968a" stroke-width="2.4" data-hub="h10" data-domain="cms" data-name="EDGE CACHE RING S" style="cursor:pointer;"/>
+            <circle cx="79.59" cy="53.68" r="3.6" fill="#1e968a" data-hub="h10" data-domain="cms"/>
+            <circle cx="64.24" cy="71.34" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h11" data-domain="core" data-name="STREAM BUFFER POOL" style="cursor:pointer;"/>
+            <circle cx="64.24" cy="71.34" r="3.6" fill="#d9dbda" data-hub="h11" data-domain="core"/>
+            <circle cx="42.08" cy="86.28" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h12" data-domain="core" data-name="LATAM CLUSTER" style="cursor:pointer;"/>
+            <circle cx="42.08" cy="86.28" r="3.6" fill="#d9dbda" data-hub="h12" data-domain="core"/>
+            <circle cx="13.36" cy="95.07" r="7.2" fill="#474749" stroke="#81c675" stroke-width="2.4" data-hub="h13" data-domain="atlas" data-name="AFRICA CLUSTER" style="cursor:pointer;"/>
+            <circle cx="13.36" cy="95.07" r="3.6" fill="#81c675" data-hub="h13" data-domain="atlas"/>
+            <circle cx="-19.96" cy="93.90" r="7.2" fill="#474749" stroke="#1e968a" stroke-width="2.4" data-hub="h14" data-domain="cms" data-name="NA-EAST CLUSTER" style="cursor:pointer;"/>
+            <circle cx="-19.96" cy="93.90" r="3.6" fill="#1e968a" data-hub="h14" data-domain="cms"/>
+            <circle cx="-50.87" cy="81.41" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h15" data-domain="core" data-name="NA-WEST CLUSTER" style="cursor:pointer;"/>
+            <circle cx="-50.87" cy="81.41" r="3.6" fill="#d9dbda" data-hub="h15" data-domain="core"/>
+          </g>
+          <g id="kgOverlayLayer" pointer-events="none"></g>
+          <g id="kgCenterHub" style="cursor:pointer;">
+            <circle cx="0" cy="0" r="46" fill="#474749" stroke="#e9e7e1" stroke-width="5" id="kgCenterRingOuter"/>
+            <circle cx="0" cy="0" r="38" fill="#474749" stroke="#6f6f71" stroke-width="1"/>
+            <text x="0" y="-3" font-family="'Oswald',sans-serif" font-weight="600" font-size="11.5" fill="#f3f1ec" text-anchor="middle" letter-spacing=".5px">GRAPH</text>
+            <text x="0" y="11" font-family="'Oswald',sans-serif" font-weight="600" font-size="11.5" fill="#f3f1ec" text-anchor="middle" letter-spacing=".5px">CORE</text>
+          </g>
+          <text x="0" y="27" font-family="'JetBrains Mono',monospace" font-size="3.8" fill="#888" text-anchor="middle" letter-spacing=".3">73K WRITES/SEC</text>
+        </svg>
+      </div>
+
+      <div class="kgraph-hud" id="kgHud">Click <span>nodes</span> to trace pathways · Shift+click to multi-select · Click <span>GRAPH CORE</span> to pulse all</div>
+
+      <div class="kgraph-stats">
+        <div class="kg-stat-section">
+          <h4>The Knowledge Graph</h4>
+          <div class="kg-stat-cols kg-cols-2">
+            <div class="kg-stat-block"><span class="kg-stat-num">10</span><span class="kg-stat-label">Thousand Sources</span><p class="kg-stat-copy">APIs, internal tools, and crawled documents spanning every team and surface.</p></div>
+            <div class="kg-stat-block"><span class="kg-stat-num">$3.5<sup style="font-size:.45em;">M</sup></span><span class="kg-stat-label">Infra Spend</span><p class="kg-stat-copy">Yearly cost across compute, storage tiering, and replica bandwidth.</p></div>
+            <div class="kg-stat-block"><span class="kg-stat-num">27<sup style="font-size:.45em;">ms</sup></span><span class="kg-stat-label">Query Latency</span><p class="kg-stat-copy">Avg time from query to fully resolved multi-hop answer at the edge.</p></div>
+          </div>
+        </div>
+        <div class="kg-stat-section">
+          <h4>The Data</h4>
+          <div class="kg-stat-cols kg-cols-3">
+            <div class="kg-stat-block"><span style="font-size:9px;color:#c9a24a;display:block;">Gate One</span><span class="kg-stat-num" style="font-size:26px;">99.99%</span><span class="kg-stat-label">Discarded</span><p class="kg-stat-copy">High-volume stream reduced at first gate.</p></div>
+            <div class="kg-stat-block"><span style="font-size:9px;color:#c9a24a;display:block;">Graph Core</span><span class="kg-stat-num">73<span style="font-size:14px;"> K</span></span><span class="kg-stat-label">Writes/sec</span><p class="kg-stat-copy">Each accepted record committed immediately.</p></div>
+            <div class="kg-stat-block"><span style="font-size:9px;color:#c9a24a;display:block;">Tier 1</span><span class="kg-stat-num">11</span><span class="kg-stat-label">Replicas</span><p class="kg-stat-copy">Tier 1 sites hold the long-term archive.</p></div>
+          </div>
+        </div>
+        <div class="kg-stat-section">
+          <h4>Less Than a Second</h4>
+          <div class="kg-stat-cols kg-cols-4">
+            <div class="kg-stat-block"><span class="kg-stat-num" style="font-size:26px;">1<sup style="font-size:.45em;">PB</sup></span><span class="kg-stat-label">Every Second</span><p class="kg-stat-copy">1,000 terabytes produced every second at network peak.</p></div>
+            <div class="kg-stat-block"><span class="kg-stat-num">140</span><span class="kg-stat-label">Replicas</span><p class="kg-stat-copy">Distributed globally across 6 continents.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="kgraph-info-panel" id="kgInfoPanel">
+        <div class="kgraph-panel-inner" id="kgPanelInner">
+          <button style="position:absolute;top:14px;right:14px;background:#232323;border:none;border-radius:50%;width:28px;height:28px;color:#888;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;" id="kgPanelClose">&#x2715;</button>
+        </div>
+      </div>
+      <div id="kg-tooltip"><div class="tt-title" id="kgTtTitle"></div><div class="tt-sub" id="kgTtSub"></div></div>
+      <div class="kg-sel-badge" id="kgSelBadge"></div>
+    </section>
+
   </main>
 
   <!-- ── AUDIT TRAIL VERIFICATION MODAL ────────────────────────────── -->
@@ -979,7 +1360,34 @@
   <div id="toast-container"></div>
 
   <!-- Javascript Logic Modules -->
-  <script src="/static/camera-mock.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="camera-mock.js"></script>
+  <script src="app.js"></script>
+
+  <!-- ═══ EXTERNAL LOGIC MODULES ═════════════════════════════════════════════ -->
+  <script src="farm-calendar.js"></script>
+  <script src="kg-interactivity.js"></script>
+  <script type="module" src="voice-agent.js"></script>
+
+  <!-- Login Modal -->
+  <div id="login-modal" class="audit-modal" style="display: none; align-items: center; justify-content: center; z-index: 10000; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85);">
+    <div class="panel-card" style="width: 360px; padding: 24px; border: 1px solid var(--border-color); background: #0c1216; box-shadow: 0 8px 32px rgba(0,0,0,0.5);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h3 style="font-family: 'Space Mono', monospace; font-size: 1.1rem; color: #fff; margin: 0; letter-spacing: 1px;">OPERATOR SIGN-IN</h3>
+        <button id="login-modal-close" style="background: none; border: none; color: #888; cursor: pointer; font-size: 1.2rem;">&times;</button>
+      </div>
+      <form id="login-form">
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 6px; font-family: 'Space Mono', monospace;">USERNAME</label>
+          <input type="text" id="login-username" required style="width: 100%; padding: 10px; background: #131b20; border: 1px solid var(--border-color); border-radius: 4px; color: #fff; font-family: sans-serif; font-size: 0.85rem;" placeholder="Enter username">
+        </div>
+        <div style="margin-bottom: 24px;">
+          <label style="display: block; font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 6px; font-family: 'Space Mono', monospace;">PASSWORD</label>
+          <input type="password" id="login-password" required style="width: 100%; padding: 10px; background: #131b20; border: 1px solid var(--border-color); border-radius: 4px; color: #fff; font-family: sans-serif; font-size: 0.85rem;" placeholder="Enter password">
+        </div>
+        <button type="submit" class="action-btn" style="width: 100%; padding: 12px; font-size: 0.85rem; font-weight: bold; letter-spacing: 1px;">AUTHENTICATE</button>
+      </form>
+    </div>
+  </div>
 </body>
 </html>
+
