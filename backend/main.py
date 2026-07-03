@@ -88,7 +88,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; "
             "script-src 'self' https://cdn.jsdelivr.net https://unpkg.com https://esm.sh; "
             "img-src * data: blob:; "
-            "connect-src 'self' ws: wss: https://raven-klqu.onrender.com https://*.netlify.app https://*.netlify.com;"
+            "connect-src 'self' ws: wss: http://localhost:* http://127.0.0.1:* "
+            "https://raven-klqu.onrender.com https://*.netlify.app https://*.netlify.com "
+            "https://proximusraven.app.n8n.cloud;"
         )
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         return response
@@ -140,8 +142,17 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
 
+    # Pre-load YOLO model for in-process frame filtering
+    from backend.services.yolo_filter import _get_model
+    _get_model()
+    logger.info("YOLOv8 model pre-loaded for in-process detection")
+
     # Create evidence store directory
     Path(settings.evidence_store_path).mkdir(parents=True, exist_ok=True)
+
+    # Ensure OpenClaw Gateway is running before bridge connects
+    from backend.openclaw.gateway import ensure_openclaw_gateway, shutdown_openclaw_gateway
+    await ensure_openclaw_gateway()
 
     # Start OpenClaw AgentX bridge background task
     from backend.openclaw.bridge import start_openclaw_bridge
@@ -155,6 +166,7 @@ async def lifespan(app: FastAPI):
         await bridge_task
     except asyncio.CancelledError:
         pass
+    await shutdown_openclaw_gateway()
     logger.info("OpenClaw AgentX bridge task stopped")
     logger.info("Raven AI CCTV shutting down")
 
@@ -195,7 +207,8 @@ app.include_router(audit.router)
 app.include_router(biometrics.router)
 app.include_router(rf.router)
 
-
+from backend.routers import debug as debug_router
+app.include_router(debug_router.router)
 
 # ── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/api/health", tags=["system"])

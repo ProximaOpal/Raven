@@ -56,6 +56,11 @@ async def enroll_profile(
     """
     # 1. Read file contents
     contents = await file.read()
+    if len(contents) > 5 * 1024 * 1024:  # 5MB
+        raise HTTPException(
+            status_code=400,
+            detail="File size too large. Maximum size allowed is 5MB."
+        )
     try:
         image = Image.open(io.BytesIO(contents)).convert("RGB")
         frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)

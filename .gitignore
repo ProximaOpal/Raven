@@ -1,0 +1,31 @@
+# Environments and credentials
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Databases
+*.db
+*.sqlite3
+!nexus.db
+
+# Application/Service storage and runtime dirs
+evidence_store/
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+
+# Archives and local test directories
+*.zip
+farmercalendar2/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini

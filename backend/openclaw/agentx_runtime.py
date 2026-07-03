@@ -7,6 +7,7 @@ import sys
 import json
 import logging
 import asyncio
+import base64
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,14 +19,45 @@ from backend.database import AsyncSessionLocal
 from backend.models import Incident, Camera, IncidentStatus, SeverityLevel
 from backend.services.rf_sensor import RFSensorService
 from backend.services import qwen_vl, qwen_plus, alert_dispatch
+from backend.services.yolo_filter import detect_targets, detections_to_boxes
+from backend.ws_manager import ws_manager
+from backend.routers.debug import append_debug_log
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-YOLO_SERVER_PATH = str(PROJECT_ROOT / "backend" / "openclaw" / "mcp_yolo.py")
 BIOMETRICS_SERVER_PATH = str(PROJECT_ROOT / "backend" / "openclaw" / "mcp_biometrics.py")
 FORENSICS_SERVER_PATH = str(PROJECT_ROOT / "backend" / "openclaw" / "mcp_forensics.py")
+
+
+async def run_yolo_inprocess(image_b64: str) -> dict:
+    """
+    Run YOLO pre-filter in-process using the persistent lazy-loaded model.
+    Avoids spawning a subprocess per frame.
+    """
+    import numpy as np
+    import cv2
+
+    if "," in image_b64:
+        image_b64 = image_b64.split(",")[1]
+
+    img_bytes = base64.b64decode(image_b64)
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    if frame is None:
+        return {"has_targets": False, "detections": [], "error": "Invalid image data"}
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, detect_targets, frame)
+    boxes = detections_to_boxes(result)
+    return {
+        "has_targets": result.has_targets,
+        "detections": boxes,
+        "frame_width": result.frame_width,
+        "frame_height": result.frame_height,
+    }
 
 async def call_mcp_tool_stdio(script_path: str, tool_name: str, arguments: dict) -> dict:
     """Invokes a local MCP server subprocess via standard JSON-RPC over stdio."""
@@ -89,8 +121,8 @@ class AgentXRuntime:
         # 2. Planner: sequence tools and check RF Telemetry
         plan = await AgentXRuntime.planner_sequence(camera_id, subtasks)
         
-        # 3. Executor: execute planned tools via stdio MCP servers
-        results = await AgentXRuntime.executor_run(image_b64, plan)
+        # 3. Executor: execute planned tools
+        results = await AgentXRuntime.executor_run(camera_id, image_b64, plan)
         
         # 4. Supervisor: Verify outcomes against rules.md and compile database incident
         final_incident = await AgentXRuntime.supervisor_verify(camera_id, image_b64, results)
@@ -145,22 +177,42 @@ class AgentXRuntime:
         }
 
     @staticmethod
-    async def executor_run(image_b64: str, plan: dict) -> dict:
-        """Executor agent runs the tools via MCP Servers."""
+    async def executor_run(camera_id: int, image_b64: str, plan: dict) -> dict:
+        """Executor agent runs tools — YOLO in-process, biometrics via MCP."""
         results = {"rf_correlation": plan["rf_correlation"]}
-        
-        # Step 1: Run YOLO object detection
+
+        # Step 1: YOLO object detection (persistent in-process model)
         if "yolo_prefilter" in plan["sequence"]:
-            logger.info("[AgentX Executor] Launching mcp_yolo.py -> detect_objects")
-            yolo_res = await call_mcp_tool_stdio(YOLO_SERVER_PATH, "detect_objects", {"image_b64": image_b64})
+            logger.info("[AgentX Executor] Running YOLO pre-filter (in-process)")
+            append_debug_log("INFO", "AgentX/YOLO", f"Scanning frame from CAM-{camera_id:02d}")
+            yolo_res = await run_yolo_inprocess(image_b64)
             results["yolo"] = yolo_res
-            
-            # If no targets detected, we stop execution here to prevent context bloat & cost
-            if not yolo_res.get("has_targets", True):
-                logger.info("[AgentX Executor] YOLO reports no targets detected. Terminating execution loop.")
+
+            if yolo_res.get("has_targets"):
+                detections = yolo_res.get("detections", [])
+                labels = ", ".join({d["label"] for d in detections}) or "object"
+                append_debug_log(
+                    "INFO", "AgentX/YOLO",
+                    f"Detection on CAM-{camera_id:02d}: {labels}",
+                    detections=len(detections),
+                )
+                await ws_manager.broadcast_detection({
+                    "camera_id": camera_id,
+                    "detections": detections,
+                    "labels": labels,
+                    "frame_width": yolo_res.get("frame_width", 640),
+                    "frame_height": yolo_res.get("frame_height", 480),
+                })
+            else:
+                append_debug_log("DEBUG", "AgentX/YOLO", f"No targets on CAM-{camera_id:02d} — frame skipped")
+                await ws_manager.broadcast_frame_skipped({
+                    "camera_id": camera_id,
+                    "reason": "No person/vehicle detected by YOLO pre-filter",
+                })
+                logger.info("[AgentX Executor] YOLO reports no targets. Terminating execution loop.")
                 return results
 
-        # Step 2: Run Biometric face matcher
+        # Step 2: Biometric face matcher (MCP subprocess — infrequent)
         if "biometric_check" in plan["sequence"]:
             logger.info("[AgentX Executor] Launching mcp_biometrics.py -> match_biometric_face")
             bio_res = await call_mcp_tool_stdio(BIOMETRICS_SERVER_PATH, "match_biometric_face", {"image_b64": image_b64})
@@ -176,9 +228,10 @@ class AgentXRuntime:
         # Handle early termination (skipped frame)
         if "yolo" in executor_results and not executor_results["yolo"].get("has_targets", True):
             return {"status": "skipped", "reason": "YOLO pre-filter returned no targets"}
-            
+
         rf_conf = executor_results.get("rf_correlation", {})
         matched_faces = executor_results.get("biometrics", {}).get("detections", [])
+        yolo_boxes = executor_results.get("yolo", {}).get("detections", [])
         
         # 1. Run Qwen-VL-Max vision analysis
         logger.info("[AgentX Supervisor] Ingesting frame to Qwen-VL-Max...")
@@ -253,7 +306,6 @@ class AgentXRuntime:
                 logger.error(f"Alert dispatch error: {e}")
                 
             # Broadcast on WebSocket
-            from backend.ws_manager import ws_manager
             await ws_manager.broadcast_incident({
                 "id": inc.id,
                 "camera_id": camera_id,
@@ -262,8 +314,15 @@ class AgentXRuntime:
                 "timestamp": inc.timestamp.isoformat(),
                 "status": inc.status.value,
                 "biometrics_matched": matched_faces,
-                "bounding_boxes": getattr(analysis, "bounding_boxes", [])
+                "bounding_boxes": yolo_boxes or getattr(analysis, "bounding_boxes", []),
             })
+
+            append_debug_log(
+                "WARN" if inc.severity and inc.severity.value in ("CRITICAL", "HIGH") else "INFO",
+                "AgentX/Supervisor",
+                f"Incident #{inc.id} · {inc.threat_type} · {inc.severity.value if inc.severity else 'UNKNOWN'}",
+                incident_id=inc.id,
+            )
             
             logger.info(f"[AgentX Supervisor] Security incident #{inc.id} validated, logged, and broadcasted.")
             return {

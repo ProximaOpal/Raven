@@ -153,7 +153,7 @@ async def analyze_frame(
 async def _call_qwen_vl_with_retry(payload: dict) -> dict:
     import httpx
     import asyncio
-    url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+    url = f"{settings.dashscope_openai_base_url.rstrip('/')}/chat/completions"
     headers = {
         "Authorization": f"Bearer {settings.dashscope_api_key}",
         "Content-Type": "application/json"

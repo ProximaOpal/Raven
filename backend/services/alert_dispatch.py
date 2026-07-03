@@ -24,7 +24,7 @@ async def send_sms_alert(incident_id: int, severity: str, threat_type: str, loca
         f"🚨 Raven AI ALERT [{severity}]\n"
         f"Incident #{incident_id}: {threat_type}\n"
         f"Location: {location}\n"
-        f"Action required — SOC dashboard: http://your-ecs-ip:8000"
+        f"Action required — SOC dashboard: {settings.public_dashboard_url}"
     )
 
     if not settings.is_twilio_configured:
@@ -161,7 +161,7 @@ def _build_email_html(
         <p style="color: #475569; margin: 8px 0 0; font-size: 14px; line-height: 1.6;">{description}</p>
       </div>
       <div style="text-align: center; margin-top: 24px;">
-        <a href="http://your-ecs-ip:8000" style="background: #0f172a; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; letter-spacing: 1px;">OPEN SOC DASHBOARD →</a>
+        <a href="{settings.public_dashboard_url}" style="background: #0f172a; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; letter-spacing: 1px;">OPEN SOC DASHBOARD →</a>
       </div>
     </div>
     <div style="background: #f1f5f9; padding: 16px; text-align: center; font-size: 11px; color: #94a3b8;">

@@ -12,14 +12,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
-from backend.models import AuditLog, Incident
+from backend.models import AuditLog, Incident, Operator
 from backend.schemas import AuditLogOut
+from backend.auth import require_operator
 
 router = APIRouter(prefix="/api/evidence", tags=["evidence"])
 
 
 @router.get("/{incident_id}/pdf")
-async def download_pdf(incident_id: int, db: AsyncSession = Depends(get_db)):
+async def download_pdf(
+    incident_id: int,
+    db: AsyncSession = Depends(get_db),
+    operator: Operator = Depends(require_operator),
+):
     inc = await _get_incident(db, incident_id)
     if not inc.pdf_path or not Path(inc.pdf_path).exists():
         raise HTTPException(status_code=404, detail="PDF not yet generated. Approve the incident first.")
@@ -31,7 +36,11 @@ async def download_pdf(incident_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{incident_id}/archive")
-async def download_archive(incident_id: int, db: AsyncSession = Depends(get_db)):
+async def download_archive(
+    incident_id: int,
+    db: AsyncSession = Depends(get_db),
+    operator: Operator = Depends(require_operator),
+):
     inc = await _get_incident(db, incident_id)
     if not inc.archive_path or not Path(inc.archive_path).exists():
         raise HTTPException(status_code=404, detail="Evidence archive not yet generated.")
@@ -43,7 +52,11 @@ async def download_archive(incident_id: int, db: AsyncSession = Depends(get_db))
 
 
 @router.get("/{incident_id}/audit", response_model=list[AuditLogOut])
-async def get_audit_log(incident_id: int, db: AsyncSession = Depends(get_db)):
+async def get_audit_log(
+    incident_id: int,
+    db: AsyncSession = Depends(get_db),
+    operator: Operator = Depends(require_operator),
+):
     await _get_incident(db, incident_id)
     result = await db.execute(
         select(AuditLog)
@@ -58,3 +71,4 @@ async def _get_incident(db: AsyncSession, incident_id: int) -> Incident:
     if not inc:
         raise HTTPException(status_code=404, detail="Incident not found")
     return inc
+

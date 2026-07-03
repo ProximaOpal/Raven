@@ -83,13 +83,17 @@ class BiometricsService:
                 logger.error(f"Error extracting embedding via face_recognition: {e}")
 
         # Fallback: Robust 128-dim color-texture descriptor
-        # We divide the face into a 4x4 grid. For each grid cell, we extract:
-        # - Mean H, S, V values (3 values)
-        # - Standard deviation of H, S, V (3 values)
-        # - LBP-like texture histograms (2 bins)
-        # Total per cell: 8 features. 4x4 * 8 = 128 features!
-        # This is deterministic, fast, runs on CPU, and is sensitive to face appearance.
+        # WARNING: This fallback face matcher has limited accuracy compared to deep-learning models (like dlib).
+        # It relies on color-texture distribution (HSV histograms + Laplacian variance grid).
+        # It is highly sensitive to changes in illumination, facial angle, expressions, and clothing colors.
+        # Use with caution in production systems and prefer installing 'face_recognition' for deep learning model accuracy.
         try:
+            # We divide the face into a 4x4 grid. For each grid cell, we extract:
+            # - Mean H, S, V values (3 values)
+            # - Standard deviation of H, S, V (3 values)
+            # - LBP-like texture histograms (2 bins)
+            # Total per cell: 8 features. 4x4 * 8 = 128 features!
+            # This is deterministic, fast, runs on CPU, and is sensitive to face appearance.
             hsv = cv2.cvtColor(face_crop, cv2.COLOR_BGR2HSV)
             grid_h = hsv.shape[0] // 4
             grid_w = hsv.shape[1] // 4

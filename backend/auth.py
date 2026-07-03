@@ -81,3 +81,16 @@ async def require_operator(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return operator
+
+
+def require_role(*roles: str):
+    """Enforces that the current authenticated operator has one of the allowed roles."""
+    async def dependency(operator: Operator = Depends(require_operator)) -> Operator:
+        if operator.role.value not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operation not permitted for this role"
+            )
+        return operator
+    return dependency
+

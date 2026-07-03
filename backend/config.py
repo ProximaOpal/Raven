@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     dashscope_api_key: str = "demo-key"
     # Custom workspace endpoint (optional — falls back to public DashScope)
     dashscope_api_host: str = ""
-    dashscope_openai_base_url: str = ""   # OpenAI-compatible /compatible-mode/v1
+    dashscope_openai_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     dashscope_base_url: str = ""          # Native DashScope /api/v1
     qwen_vl_model: str = "qwen-vl-max"
     qwen_vl_fallback_model: str = "qwen-vl-plus"
@@ -62,6 +62,7 @@ class Settings(BaseSettings):
 
     # ── Security & Integrations ──────────────────────────────────
     openclaw_gateway_token: str = ""
+    openclaw_gateway_url: str = "ws://127.0.0.1:18789"
     public_dashboard_url: str = "http://127.0.0.1:8000"
     cors_allowed_origins: list[str] = [
         "http://localhost:8000",

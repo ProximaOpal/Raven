@@ -108,8 +108,12 @@ class CameraSimulator {
    * Sets object detection bounding boxes on a camera.
    * Format: list of {label, x, y, w, h, conf}
    */
-  setBoundingBoxes(cameraId, boxes) {
-    this.bboxData[cameraId] = boxes || [];
+  setBoundingBoxes(cameraId, boxes, frameWidth, frameHeight) {
+    this.bboxData[cameraId] = {
+      boxes: boxes || [],
+      frameWidth: frameWidth || 640,
+      frameHeight: frameHeight || 480,
+    };
   }
 
   /**
@@ -182,13 +186,15 @@ class CameraSimulator {
       ctx.stroke();
 
       // Bounding boxes
-      const boxes = this.bboxData[id];
-      if (boxes && boxes.length > 0) {
-        boxes.forEach(box => {
-          // Normalize coordinates (input coordinates are assumed 640x400)
-          const scaleX = w / 640;
-          const scaleY = h / 400;
+      const bboxEntry = this.bboxData[id];
+      const boxes = bboxEntry && bboxEntry.boxes ? bboxEntry.boxes : [];
+      if (boxes.length > 0) {
+        const srcW = bboxEntry.frameWidth || 640;
+        const srcH = bboxEntry.frameHeight || 480;
+        const scaleX = w / srcW;
+        const scaleY = h / srcH;
 
+        boxes.forEach(box => {
           const bx = box.x * scaleX;
           const by = box.y * scaleY;
           const bw = box.w * scaleX;

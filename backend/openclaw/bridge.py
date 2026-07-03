@@ -18,28 +18,33 @@ from backend.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-OPENCLAW_WS_URL = "ws://127.0.0.1:18789"
-GATEWAY_TOKEN = "c2dae22b5ee180a947c0b1c38d718e7464dcb24b453f1bef"
-
 async def start_openclaw_bridge():
     """Main loop connecting and listening to the OpenClaw Gateway WebSocket."""
+    if not settings.openclaw_gateway_token:
+        if not settings.demo_mode:
+            logger.error(
+                "CRITICAL: OPENCLAW_GATEWAY_TOKEN is not configured. "
+                "Set it in .env — skipping OpenClaw gateway connection."
+            )
+            return
+        logger.warning(
+            "DEMO_MODE: OPENCLAW_GATEWAY_TOKEN is unset — bridge will connect without auth token."
+        )
+
+    token_to_use = settings.openclaw_gateway_token or None
+    gateway_url = settings.openclaw_gateway_url
     retry_delay = 2.0
     
     while True:
         try:
-            logger.info(f"Connecting to OpenClaw Gateway at {OPENCLAW_WS_URL}...")
-            async with websockets.connect(OPENCLAW_WS_URL) as ws:
+            logger.info("Connecting to OpenClaw Gateway at %s...", gateway_url)
+            async with websockets.connect(gateway_url) as ws:
                 logger.info("WebSocket connected. Sending authentication handshake...")
-                
-                # Send the connect/auth payload
-                handshake = {
-                    "event": "connect",
-                    "data": {
-                        "auth": {
-                            "token": GATEWAY_TOKEN
-                        }
-                    }
-                }
+
+                handshake_data: dict = {}
+                if token_to_use:
+                    handshake_data["auth"] = {"token": token_to_use}
+                handshake = {"event": "connect", "data": handshake_data}
                 await ws.send(json.dumps(handshake))
                 
                 # Reset retry delay on successful connection

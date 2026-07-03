@@ -10,14 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth import (
     create_access_token, get_current_operator, hash_password,
-    require_operator, verify_password, create_refresh_token
+    require_operator, verify_password, create_refresh_token, require_role
 )
 from backend.database import get_db
-from backend.models import Operator, RefreshToken
+from backend.models import Operator, RefreshToken, OperatorRole
 from backend.schemas import LoginRequest, OperatorCreate, OperatorOut, Token, TokenRefreshRequest
 import hashlib
 import uuid
 from datetime import timedelta
+
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -127,19 +128,41 @@ async def get_me(operator: Operator = Depends(require_operator)):
 
 
 @router.post("/register", response_model=OperatorOut, status_code=201)
-async def register(body: OperatorCreate, db: AsyncSession = Depends(get_db)):
-    """Create a new operator account (admin only in prod — open for demo)."""
+async def register(
+    body: OperatorCreate,
+    db: AsyncSession = Depends(get_db),
+    current_operator: Operator = Depends(require_role("ADMIN")),
+):
+    """Create a new operator account (admin only)."""
     existing = await db.execute(select(Operator).where(Operator.username == body.username))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Username already exists")
+
+    # Double check and override role if caller is not actually an ADMIN (as defense in depth)
+    role = body.role
+    if current_operator.role.value != "ADMIN":
+        role = OperatorRole.SOC
 
     operator = Operator(
         username=body.username,
         email=body.email,
         hashed_password=hash_password(body.password),
-        role=body.role,
+        role=role,
     )
     db.add(operator)
     await db.commit()
     await db.refresh(operator)
     return operator
+
+
+@router.post("/logout")
+async def logout(body: TokenRefreshRequest, db: AsyncSession = Depends(get_db)):
+    """Revoke a refresh token on the server-side."""
+    token_hash = hashlib.sha256(body.refresh_token.encode()).hexdigest()
+    result = await db.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+    stored_token = result.scalar_one_or_none()
+    if stored_token:
+        stored_token.revoked = True
+        await db.commit()
+    return {"detail": "Logged out successfully"}
+

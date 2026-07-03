@@ -1,6 +1,10 @@
 (function() {
-  const API_BASE = 'https://raven-klqu.onrender.com';
-  const WS_URL = 'wss://raven-klqu.onrender.com/ws/soc';
+  const PRODUCTION_API = 'https://raven-klqu.onrender.com';
+  const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? window.location.origin
+    : PRODUCTION_API;
+  const WS_URL = API_BASE.replace(/^http/, 'ws') + '/ws/soc';
+  window.API_BASE = API_BASE;
 
   // Authentication State (In-Memory Module Variables)
   let accessToken = null;
@@ -148,7 +152,8 @@
     viewMode: 'ALL', // 'ALL' or 'PENDING'
     chart: null, // Threat heatmap chart (Chart.js)
     rfChart: null, // RF signal chart (Chart.js)
-    currentView: 'dashboard' // 'dashboard', 'camera', 'ledger', 'rf', 'biometrics', 'farm-calendar', 'farm-agent', 'farm-graph'
+    currentView: 'dashboard', // 'dashboard', 'camera', 'ledger', 'rf', 'biometrics', 'farm-calendar', 'farm-agent', 'farm-graph', 'debug'
+    activityAutoScrollTimer: null
   };
 
   // WebSocket Connection
@@ -173,6 +178,7 @@
     navBtnFarmCalendar: document.getElementById('nav-btn-farm-calendar'),
     navBtnFarmAgent: document.getElementById('nav-btn-farm-agent'),
     navBtnFarmGraph: document.getElementById('nav-btn-farm-graph'),
+    navBtnDebug: document.getElementById('nav-btn-debug'),
 
     // View Sections
     viewDashboard: document.getElementById('view-dashboard'),
@@ -183,11 +189,15 @@
     viewFarmCalendar: document.getElementById('view-farm-calendar'),
     viewFarmAgent: document.getElementById('view-farm-agent'),
     viewFarmGraph: document.getElementById('view-farm-graph'),
+    viewDebug: document.getElementById('view-debug'),
 
     // 3D Cloud Dashboard View
     btnCloudLayers: document.getElementById('btn-cloud-layers'),
     cloudLayersDropdown: document.getElementById('cloud-layers-dropdown'),
     dashboardActivityList: document.getElementById('dashboard-activity-list'),
+    activityScrollPrev: document.getElementById('activity-scroll-prev'),
+    activityScrollNext: document.getElementById('activity-scroll-next'),
+    ledgerActivityList: document.getElementById('ledger-activity-list'),
     
     // Stats Mini Cards
     statHazardous: document.getElementById('stat-hazardous'),
@@ -253,13 +263,78 @@
 
   // ─── INITIALIZE ───────────────────────────────────────────────────────────
   function init() {
+    initTheme();
     setupEventListeners();
     connectWebSocket();
     startCountdown();
     refreshDashboard();
     initLeafletMap();
+    initMapFullscreen();
     initCharts();
     updateLastUpdatedTime();
+    setupActivityScroll();
+  }
+
+  function setupActivityScroll() {
+    const list = els.dashboardActivityList;
+    if (!list) return;
+
+    const scrollBy = () => {
+      const w = list.clientWidth || 280;
+      list.scrollBy({ left: w, behavior: 'smooth' });
+      if (list.scrollLeft + list.clientWidth >= list.scrollWidth - 4) {
+        list.scrollTo({ left: 0, behavior: 'smooth' });
+      }
+    };
+
+    if (els.activityScrollPrev) {
+      els.activityScrollPrev.addEventListener('click', () => {
+        const w = list.clientWidth || 280;
+        list.scrollBy({ left: -w, behavior: 'smooth' });
+      });
+    }
+    if (els.activityScrollNext) {
+      els.activityScrollNext.addEventListener('click', () => {
+        scrollBy();
+      });
+    }
+  }
+
+  function updateActivityScrollControls() {
+    const list = els.dashboardActivityList;
+    if (!list || !els.activityScrollPrev || !els.activityScrollNext) return;
+    const overflow = list.scrollWidth > list.clientWidth + 2;
+    els.activityScrollPrev.classList.toggle('hidden', !overflow);
+    els.activityScrollNext.classList.toggle('hidden', !overflow);
+
+    if (state.activityAutoScrollTimer) {
+      clearInterval(state.activityAutoScrollTimer);
+      state.activityAutoScrollTimer = null;
+    }
+    if (overflow && list.children.length > 1) {
+      state.activityAutoScrollTimer = setInterval(() => {
+        const w = list.clientWidth || 280;
+        list.scrollBy({ left: w, behavior: 'smooth' });
+        if (list.scrollLeft + list.clientWidth >= list.scrollWidth - 4) {
+          setTimeout(() => list.scrollTo({ left: 0, behavior: 'smooth' }), 600);
+        }
+      }, 4500);
+    }
+  }
+
+  function initTheme() {
+    const saved = localStorage.getItem('raven-theme');
+    const theme = saved === 'dark' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', theme);
+    const btn = document.getElementById('btn-theme-toggle');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        const current = document.documentElement.getAttribute('data-theme');
+        const next = current === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('raven-theme', next);
+      });
+    }
   }
 
   // ─── EVENT LISTENERS ──────────────────────────────────────────────────────
@@ -273,6 +348,7 @@
     els.navBtnFarmCalendar.addEventListener('click', () => switchView('farm-calendar'));
     els.navBtnFarmAgent.addEventListener('click', () => switchView('farm-agent'));
     els.navBtnFarmGraph.addEventListener('click', () => switchView('farm-graph'));
+    if (els.navBtnDebug) els.navBtnDebug.addEventListener('click', () => switchView('debug'));
 
     // Verify Audit Modal Trigger
     els.btnVerifyAudit.addEventListener('click', triggerAuditVerification);
@@ -413,6 +489,7 @@
     if (els.navBtnFarmCalendar) els.navBtnFarmCalendar.classList.remove('active');
     if (els.navBtnFarmAgent) els.navBtnFarmAgent.classList.remove('active');
     if (els.navBtnFarmGraph) els.navBtnFarmGraph.classList.remove('active');
+    if (els.navBtnDebug) els.navBtnDebug.classList.remove('active');
 
     // Reset active sections
     els.viewDashboard.classList.remove('active');
@@ -423,6 +500,7 @@
     if (els.viewFarmCalendar) els.viewFarmCalendar.classList.remove('active');
     if (els.viewFarmAgent) els.viewFarmAgent.classList.remove('active');
     if (els.viewFarmGraph) els.viewFarmGraph.classList.remove('active');
+    if (els.viewDebug) els.viewDebug.classList.remove('active');
 
     // Enable the selected view
     if (viewName === 'dashboard') {
@@ -438,6 +516,7 @@
     } else if (viewName === 'ledger') {
       els.navBtnLedger.classList.add('active');
       els.viewLedger.classList.add('active');
+      renderLedgerActivityCards();
       if (state.chart) state.chart.update();
     } else if (viewName === 'rf') {
       els.navBtnRf.classList.add('active');
@@ -457,12 +536,14 @@
     } else if (viewName === 'farm-agent') {
       if (els.navBtnFarmAgent) els.navBtnFarmAgent.classList.add('active');
       if (els.viewFarmAgent) els.viewFarmAgent.classList.add('active');
-      // open the agent overlay automatically
-      const ao = document.getElementById('agentOverlay');
-      if (ao) ao.classList.add('open');
     } else if (viewName === 'farm-graph') {
       if (els.navBtnFarmGraph) els.navBtnFarmGraph.classList.add('active');
       if (els.viewFarmGraph) els.viewFarmGraph.classList.add('active');
+    } else if (viewName === 'debug') {
+      if (els.navBtnDebug) els.navBtnDebug.classList.add('active');
+      if (els.viewDebug) els.viewDebug.classList.add('active');
+      if (typeof window.ravenDebugRefresh === 'function') window.ravenDebugRefresh();
+      if (typeof window.ravenDebugRenderLogs === 'function') window.ravenDebugRenderLogs();
     }
   }
 
@@ -623,10 +704,10 @@
       preferCanvas: true
     });
 
-    // Dark CartoDB tile layer
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      subdomains: 'abcd',
-      maxZoom: 20
+    // Dark CartoDB tile layer → Esri World Imagery (satellite)
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri'
     }).addTo(leafletMap);
 
     // Zoom control bottom-right
@@ -685,6 +766,30 @@
     });
   }
 
+  function initMapFullscreen() {
+    const btn = document.getElementById('btn-map-fullscreen');
+    const cardBody = document.getElementById('map-card-body');
+    if (!btn || !cardBody) return;
+
+    btn.addEventListener('click', () => {
+      if (!document.fullscreenElement) {
+        cardBody.requestFullscreen().then(() => {
+          if (leafletMap) setTimeout(() => leafletMap.invalidateSize(), 200);
+        }).catch(err => console.warn('Fullscreen failed:', err));
+      } else {
+        document.exitFullscreen();
+      }
+    });
+
+    document.addEventListener('fullscreenchange', () => {
+      const isFs = document.fullscreenElement === cardBody;
+      btn.title = isFs ? 'Exit fullscreen' : 'Fullscreen map';
+      const useEl = btn.querySelector('use');
+      if (useEl) useEl.setAttribute('href', isFs ? '#ico-compress' : '#ico-expand');
+      if (leafletMap) setTimeout(() => leafletMap.invalidateSize(), 200);
+    });
+  }
+
   // ─── WEBSOCKET LOGIC ──────────────────────────────────────────────────────
   function connectWebSocket() {
     if (ws) {
@@ -733,26 +838,62 @@
   function handleWSMessage(msg) {
     if (msg.event === 'pong') return;
 
+    if (typeof window.ravenAppendLog === 'function') {
+      window.ravenAppendLog('INFO', 'WebSocket', `${msg.event}`, msg.data);
+    }
+
+    if (msg.event === 'yolo_detection') {
+      const data = msg.data || {};
+      const camId = data.camera_id;
+      const labels = data.labels || 'object';
+      if (window.cameraSimulator && camId) {
+        window.cameraSimulator.setBoundingBoxes(camId, data.detections || [], data.frame_width, data.frame_height);
+      }
+      showToast(
+        'Detection',
+        `${labels} detected on CAM-${String(camId).padStart(2, '0')}`,
+        'MEDIUM'
+      );
+      return;
+    }
+
+    if (msg.event === 'frame_skipped') {
+      const data = msg.data || {};
+      showToast(
+        'Frame Skipped',
+        data.reason || `No targets on CAM-${String(data.camera_id).padStart(2, '0')}`,
+        'info'
+      );
+      return;
+    }
+
+    if (msg.event === 'pipeline_log') {
+      const data = msg.data || {};
+      if (typeof window.ravenAppendLog === 'function') {
+        window.ravenAppendLog(data.level || 'INFO', data.source || 'Pipeline', data.message || '');
+      }
+      return;
+    }
+
     if (msg.event === 'incident_new' || msg.event === 'incident') {
       const incident = msg.data;
-      
-      // Visual Alert Highlight on Camera tile
+
       if (window.cameraSimulator) {
         window.cameraSimulator.triggerAlert(incident.camera_id, incident.severity);
-        if (incident.qwen_reasoning) {
-          try {
-            const rawBoxes = incident.bounding_boxes || [];
-            window.cameraSimulator.setBoundingBoxes(incident.camera_id, rawBoxes);
-          } catch(e) {}
+        const rawBoxes = incident.bounding_boxes || [];
+        if (rawBoxes.length) {
+          window.cameraSimulator.setBoundingBoxes(incident.camera_id, rawBoxes);
         }
-        // Load frame
         window.cameraSimulator.setFeedImage(incident.camera_id, `${API_BASE}/api/incidents/${incident.id}/frame`);
       }
 
+      const sev = incident.severity || 'info';
+      const isCritical = String(sev).toUpperCase() === 'CRITICAL';
       showToast(
-        `[${incident.severity}] ${incident.threat_type || 'Threat Detected'}`,
-        `Camera #${incident.camera_id} reported activity. Awaiting operator validation.`,
-        incident.severity
+        isCritical ? 'Security Alert' : `[${sev}] ${incident.threat_type || 'Threat Detected'}`,
+        `Camera #${incident.camera_id} · Incident #${incident.id} · Awaiting operator validation.`,
+        sev,
+        isCritical
       );
 
       // Biometrics Registry matches
@@ -842,9 +983,11 @@
   }
 
   // ─── TOAST NOTIFICATION ───────────────────────────────────────────────────
-  function showToast(title, message, severity = "info") {
+  function showToast(title, message, severity = "info", persistent = false) {
     const toast = document.createElement('div');
-    toast.className = `toast toast-${severity.toLowerCase()}`;
+    const sevUpper = String(severity).toUpperCase();
+    const isPersistent = persistent || sevUpper === 'CRITICAL';
+    toast.className = `toast toast-${severity.toLowerCase()}${isPersistent ? ' toast-persistent' : ''}`;
     
     // Inline SVG icons — no CDN dependency
     const ICONS = {
@@ -867,16 +1010,22 @@
     `;
 
     els.toastContainer.appendChild(toast);
+
+    if (typeof window.ravenAppendLog === 'function') {
+      window.ravenAppendLog(sevUpper === 'CRITICAL' ? 'WARN' : 'INFO', 'Toast', `${title}: ${message}`);
+    }
     
     toast.querySelector('.toast-close').addEventListener('click', () => {
       toast.remove();
     });
 
-    setTimeout(() => {
-      if (toast.parentNode) {
-        toast.remove();
-      }
-    }, 8000);
+    if (!isPersistent) {
+      setTimeout(() => {
+        if (toast.parentNode) {
+          toast.remove();
+        }
+      }, 8000);
+    }
   }
 
   // ─── COUNTDOWN TIMER ──────────────────────────────────────────────────────
@@ -961,6 +1110,7 @@
         els.statTotalTracks.textContent = state.incidents.length || 43;
 
         renderDashboardActivityFeed();
+        renderLedgerActivityCards();
         renderIncidentLedger();
         updateChartData();
       }
@@ -976,6 +1126,61 @@
     info:         '<svg class="act-ico" style="color:#a29bfe;"><use href="#ico-circle"/></svg>',
   };
 
+  // ─── ACTIVITY ITEM BUILDER (shared dashboard + ledger) ───────────────────
+  function buildActivityMeta(inc) {
+    let iconKey = 'info';
+    let text = escapeHtml(inc.scene_description) || `Activity reported on Camera #${escapeHtml(inc.camera_id)}`;
+
+    if (inc.severity === 'CRITICAL') {
+      iconKey = 'hazardous';
+      text = inc.threat_type
+        ? `${escapeHtml(inc.threat_type)} detected on <strong>CAM-0${escapeHtml(inc.camera_id)}</strong>`
+        : text;
+    } else if (inc.severity === 'HIGH' || inc.severity === 'MEDIUM') {
+      iconKey = 'interruption';
+      text = inc.threat_type
+        ? `${escapeHtml(inc.threat_type)} at <strong>CAM-0${escapeHtml(inc.camera_id)}</strong>`
+        : text;
+    }
+
+    if (inc.qwen_reasoning) {
+      const snippet = escapeHtml(String(inc.qwen_reasoning).slice(0, 120));
+      text += ` — <em style="color:var(--text-secondary);font-style:normal;">${snippet}${inc.qwen_reasoning.length > 120 ? '…' : ''}</em>`;
+    }
+
+    const elapsed = Date.now() - new Date(inc.timestamp).getTime();
+    let timeStr = 'Just now';
+    if (elapsed > 60000) {
+      const mins = Math.floor(elapsed / 60000);
+      timeStr = mins === 1 ? '1 minute ago' : `${mins} minutes ago`;
+      if (mins >= 60) {
+        const hrs = Math.floor(mins / 60);
+        timeStr = hrs === 1 ? '1 hour ago' : `${hrs} hours ago`;
+        if (hrs >= 24) timeStr = new Date(inc.timestamp).toLocaleDateString();
+      }
+    }
+
+    return { iconKey, text, timeStr };
+  }
+
+  function createActivityItem(inc, opts = {}) {
+    const { iconKey, text, timeStr } = buildActivityMeta(inc);
+    const item = document.createElement('div');
+    item.className = 'activity-item';
+    item.innerHTML = `
+      <div class="activity-item-left">
+        <span class="activity-icon-wrap ${escapeHtml(iconKey)}">${ICON_SVG[iconKey]}</span>
+        <span class="activity-text"${opts.fullWidth ? '' : ' style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px;"'}>${text}</span>
+      </div>
+      <span class="activity-time">${escapeHtml(timeStr)}</span>
+    `;
+    item.addEventListener('click', () => {
+      switchView('camera');
+      selectIncident(inc);
+    });
+    return item;
+  }
+
   // ─── RENDER DASHBOARD ACTIVITY FEED (Bottom Center) ───────────────────────
   function renderDashboardActivityFeed() {
     const list = els.dashboardActivityList;
@@ -984,100 +1189,45 @@
     list.innerHTML = '';
 
     if (state.incidents.length === 0) {
-      // Fallback static items using inline SVGs
       list.innerHTML = `
         <div class="activity-item">
           <div class="activity-item-left">
-            <span class="activity-icon-wrap hazardous">${ICON_SVG.hazardous}</span>
-            <span class="activity-text">Unauthorized Vehicle Access at <strong>CAM-03</strong></span>
+            <span class="activity-icon-wrap info">${ICON_SVG.info}</span>
+            <span class="activity-text">Awaiting backend analysis — upload a CCTV video or inject a test frame</span>
           </div>
-          <span class="activity-time">3 hours ago</span>
+          <span class="activity-time">—</span>
         </div>
-        <div class="activity-item">
-          <div class="activity-item-left">
-            <span class="activity-icon-wrap interruption">${ICON_SVG.interruption}</span>
-            <span class="activity-text">Perimeter Fence Damage at <strong>CAM-04</strong></span>
-          </div>
-          <span class="activity-time">16/08/2025</span>
-        </div>
+      `;
+      updateActivityScrollControls();
+      return;
+    }
+
+    state.incidents.slice(0, 12).forEach(inc => {
+      list.appendChild(createActivityItem(inc));
+    });
+    updateActivityScrollControls();
+  }
+
+  function renderLedgerActivityCards() {
+    const list = els.ledgerActivityList;
+    if (!list) return;
+    list.innerHTML = '';
+
+    if (state.incidents.length === 0) {
+      list.innerHTML = `
         <div class="activity-item">
           <div class="activity-item-left">
             <span class="activity-icon-wrap info">${ICON_SVG.info}</span>
-            <span class="activity-text">Unauthorized Vehicle Access at <strong>CAM-02</strong></span>
+            <span class="activity-text">No analysis results yet. Upload video on the 3D Cloud or Tactical Camera Grid to populate this feed.</span>
           </div>
-          <span class="activity-time">15/08/2025</span>
-        </div>
-        <div class="activity-item">
-          <div class="activity-item-left">
-            <span class="activity-icon-wrap interruption">${ICON_SVG.interruption}</span>
-            <span class="activity-text">Tailgating — Unauthorized Entry on <strong>CAM-01</strong></span>
-          </div>
-          <span class="activity-time">14/08/2025</span>
-        </div>
-        <div class="activity-item">
-          <div class="activity-item-left">
-            <span class="activity-icon-wrap info">${ICON_SVG.info}</span>
-            <span class="activity-text">Abandoned Object at <strong>CAM-02</strong></span>
-          </div>
-          <span class="activity-time">14/08/2025</span>
-        </div>
-        <div class="activity-item">
-          <div class="activity-item-left">
-            <span class="activity-icon-wrap hazardous">${ICON_SVG.hazardous}</span>
-            <span class="activity-text">Perimeter intrusion detected on <strong>CAM-01</strong></span>
-          </div>
-          <span class="activity-time">13/08/2025</span>
+          <span class="activity-time">—</span>
         </div>
       `;
       return;
     }
 
-    // Render first 7 incidents in activity feed list
-    state.incidents.slice(0, 7).forEach(inc => {
-      const item = document.createElement('div');
-      item.className = 'activity-item';
-
-      let iconKey = 'info';
-      let text = escapeHtml(inc.scene_description) || `Activity reported on Camera #${escapeHtml(inc.camera_id)}`;
-
-      if (inc.severity === 'CRITICAL') {
-        iconKey = 'hazardous';
-        text = inc.threat_type ? `${escapeHtml(inc.threat_type)} detected on <strong>CAM-0${escapeHtml(inc.camera_id)}</strong>` : text;
-      } else if (inc.severity === 'HIGH' || inc.severity === 'MEDIUM') {
-        iconKey = 'interruption';
-        text = inc.threat_type ? `${escapeHtml(inc.threat_type)} at <strong>CAM-0${escapeHtml(inc.camera_id)}</strong>` : text;
-      }
-
-      // Format time elapsed
-      const elapsed = Date.now() - new Date(inc.timestamp).getTime();
-      let timeStr = 'Just now';
-      if (elapsed > 60000) {
-        const mins = Math.floor(elapsed / 60000);
-        timeStr = mins === 1 ? '1 minute ago' : `${mins} minutes ago`;
-        if (mins >= 60) {
-          const hrs = Math.floor(mins / 60);
-          timeStr = hrs === 1 ? '1 hour ago' : `${hrs} hours ago`;
-          if (hrs >= 24) {
-            timeStr = new Date(inc.timestamp).toLocaleDateString();
-          }
-        }
-      }
-
-      item.innerHTML = `
-        <div class="activity-item-left">
-          <span class="activity-icon-wrap ${escapeHtml(iconKey)}">${ICON_SVG[iconKey]}</span>
-          <span class="activity-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px;">${text}</span>
-        </div>
-        <span class="activity-time">${escapeHtml(timeStr)}</span>
-      `;
-      
-      // Click to camera view + review
-      item.addEventListener('click', () => {
-        switchView('camera');
-        selectIncident(inc);
-      });
-
-      list.appendChild(item);
+    state.incidents.forEach(inc => {
+      list.appendChild(createActivityItem(inc, { fullWidth: true }));
     });
   }
 
@@ -1566,5 +1716,7 @@
   }
 
   // Load entry
+  window.refreshDashboard = refreshDashboard;
+  window.showToast = showToast;
   document.addEventListener('DOMContentLoaded', init);
 })();

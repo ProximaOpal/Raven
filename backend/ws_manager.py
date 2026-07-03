@@ -78,6 +78,27 @@ class ConnectionManager:
             "data": telemetry_data,
         })
 
+    async def broadcast_detection(self, detection_data: dict[str, Any]) -> None:
+        """Broadcast YOLO pre-filter detections (before Qwen-VL reasoning)."""
+        await self.broadcast({
+            "event": "yolo_detection",
+            "data": detection_data,
+        })
+
+    async def broadcast_frame_skipped(self, skip_data: dict[str, Any]) -> None:
+        """Broadcast when a frame is dropped by the YOLO pre-filter."""
+        await self.broadcast({
+            "event": "frame_skipped",
+            "data": skip_data,
+        })
+
+    async def broadcast_pipeline_log(self, log_data: dict[str, Any]) -> None:
+        """Broadcast pipeline activity for the debug console."""
+        await self.broadcast({
+            "event": "pipeline_log",
+            "data": log_data,
+        })
+
     @property
     def connection_count(self) -> int:
         return len(self.active_connections)

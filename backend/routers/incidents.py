@@ -16,16 +16,18 @@ from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.auth import get_current_operator
+from backend.auth import require_operator, require_role, get_current_operator
 from backend.database import get_db
 from backend.models import Alert, AlertChannel, Camera, Incident, IncidentStatus, Operator, SeverityLevel
 from backend.schemas import AnalyzeFrameRequest, IncidentDecision, IncidentOut
 from backend.services import alert_dispatch, evidence_package, qwen_plus, qwen_vl
 from backend.services.hitl import HITLWorkflow
+from backend.config import get_settings
 from backend.ws_manager import ws_manager
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 def _incident_to_dict(inc: Incident) -> dict:
@@ -128,10 +130,10 @@ async def approve_incident(
     body: IncidentDecision,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    operator: Operator | None = Depends(get_current_operator),
+    operator: Operator = Depends(require_role("ADMIN", "SOC")),
 ):
     inc = await _get_pending(db, incident_id)
-    operator_id = operator.id if operator else 1  # default for demo
+    operator_id = operator.id
     inc = await HITLWorkflow.approve(db, inc, operator_id, body.notes, _get_ip(request))
 
     # Generate evidence package on approval
@@ -158,10 +160,10 @@ async def reject_incident(
     body: IncidentDecision,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    operator: Operator | None = Depends(get_current_operator),
+    operator: Operator = Depends(require_role("ADMIN", "SOC")),
 ):
     inc = await _get_pending(db, incident_id)
-    operator_id = operator.id if operator else 1
+    operator_id = operator.id
     inc = await HITLWorkflow.reject(db, inc, operator_id, body.notes, _get_ip(request))
     await ws_manager.broadcast_incident_update(_incident_to_dict(inc))
     return {"status": "rejected", "incident_id": inc.id}
@@ -173,10 +175,10 @@ async def escalate_incident(
     body: IncidentDecision,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    operator: Operator | None = Depends(get_current_operator),
+    operator: Operator = Depends(require_role("ADMIN", "SOC")),
 ):
     inc = await _get_pending(db, incident_id)
-    operator_id = operator.id if operator else 1
+    operator_id = operator.id
     inc = await HITLWorkflow.escalate(db, inc, operator_id, body.notes, _get_ip(request))
 
     # Escalation also triggers evidence packaging
@@ -200,76 +202,36 @@ async def escalate_incident(
 async def analyze_frame(
     body: AnalyzeFrameRequest,
     db: AsyncSession = Depends(get_db),
+    operator: Operator | None = Depends(get_current_operator),
 ):
     """
-    Manually submit a base64 frame for full pipeline processing.
-    Creates an Incident record and triggers Qwen-VL analysis.
+    Submit a base64 frame for full AgentX pipeline processing.
+    YOLO pre-filter → biometrics → Qwen-VL-Max (only if targets detected).
     """
+    if operator is None and not settings.demo_mode:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
     camera = await db.get(Camera, body.camera_id)
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
 
-    # Run Qwen-VL analysis
-    analysis = await qwen_vl.analyze_frame(
-        body.image_b64,
-        camera.name,
-        camera.location,
-    )
+    from backend.openclaw.agentx_runtime import AgentXRuntime
 
-    # Persist incident
-    actors_json = json.dumps(analysis.actors_detected)
-    inc = Incident(
-        camera_id=camera.id,
-        timestamp=datetime.now(timezone.utc),
-        threat_type=analysis.threat_type,
-        severity=analysis.severity,
-        severity_score=analysis.severity_score,
-        actors_detected=actors_json,
-        scene_description=analysis.scene_description,
-        qwen_reasoning=analysis.qwen_reasoning,
-        confidence=analysis.confidence,
-        status=IncidentStatus.PENDING,
-        tokens_used=getattr(analysis, "tokens_used", None),
-        api_cost_usd=getattr(analysis, "api_cost_usd", None),
-    )
-    db.add(inc)
-    await db.flush()
+    result = await AgentXRuntime.run_agentx_pipeline(body.camera_id, body.image_b64)
 
-    # Save frame image
-    from backend.services.evidence_package import save_incident_frame
-    frame_path = save_incident_frame(inc.id, body.image_b64)
-    inc.frame_path = frame_path
+    if result.get("status") == "skipped":
+        return {
+            "status": "skipped",
+            "reason": result.get("reason"),
+            "camera_id": body.camera_id,
+        }
 
-    # Generate report
-    try:
-        rep_en, rep_sw = await qwen_plus.generate_incident_report(
-            analysis, camera.name, camera.location, inc.timestamp
-        )
-        inc.report_en = rep_en
-        inc.report_sw = rep_sw
-    except Exception as e:
-        logger.error(f"Report generation error: {e}")
+    if result.get("status") == "ok" and result.get("incident_id"):
+        inc = await db.get(Incident, result["incident_id"])
+        if inc:
+            return _incident_to_dict(inc)
 
-    await db.commit()
-    await db.refresh(inc)
-
-    # Dispatch alerts
-    try:
-        alert_records = await alert_dispatch.dispatch_alerts(
-            inc.id, inc.severity, inc.threat_type or "Unknown",
-            camera.location, inc.scene_description or "", inc.report_en
-        )
-        for ar in alert_records:
-            alert = Alert(incident_id=inc.id, **ar)
-            db.add(alert)
-        await db.commit()
-    except Exception as e:
-        logger.error(f"Alert dispatch error: {e}")
-
-    # Broadcast to SOC dashboard
-    await ws_manager.broadcast_incident(_incident_to_dict(inc))
-
-    return _incident_to_dict(inc)
+    return result
 
 
 @router.get("/{incident_id}/trajectory")

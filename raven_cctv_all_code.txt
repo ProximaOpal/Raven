@@ -15,8 +15,13 @@ FILE: .env.example
 # Set to "true" to run without real API keys (uses mock responses)
 DEMO_MODE=true
 
+# ── OPENCLAW GATEWAY ──────────────────────────────────────────────
+OPENCLAW_GATEWAY_TOKEN=your-openclaw-gateway-token
+OPENCLAW_GATEWAY_URL=ws://127.0.0.1:18789
+
 # ── QWEN / DASHSCOPE ─────────────────────────────────────────────
 DASHSCOPE_API_KEY=sk-your-dashscope-key-here
+DASHSCOPE_OPENAI_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 # Primary model (falls back to qwen-vl-plus if quota exceeded)
 QWEN_VL_MODEL=qwen-vl-max
 QWEN_PLUS_MODEL=qwen-plus
@@ -632,7 +637,7 @@ class Settings(BaseSettings):
     dashscope_api_key: str = "demo-key"
     # Custom workspace endpoint (optional — falls back to public DashScope)
     dashscope_api_host: str = ""
-    dashscope_openai_base_url: str = ""   # OpenAI-compatible /compatible-mode/v1
+    dashscope_openai_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     dashscope_base_url: str = ""          # Native DashScope /api/v1
     qwen_vl_model: str = "qwen-vl-max"
     qwen_vl_fallback_model: str = "qwen-vl-plus"
@@ -674,6 +679,7 @@ class Settings(BaseSettings):
 
     # ── Security & Integrations ──────────────────────────────────
     openclaw_gateway_token: str = ""
+    openclaw_gateway_url: str = "ws://127.0.0.1:18789"
     public_dashboard_url: str = "http://127.0.0.1:8000"
     cors_allowed_origins: list[str] = [
         "http://localhost:8000",
@@ -684,6 +690,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
         "https://raven-klqu.onrender.com",
         # Netlify deployments (main site + preview URLs)
+        "https://cheerful-klepon-c28908.netlify.app",
         "https://*.netlify.app",
         "https://*.netlify.com",
     ]
@@ -864,7 +871,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; "
             "script-src 'self' https://cdn.jsdelivr.net https://unpkg.com https://esm.sh; "
             "img-src * data: blob:; "
-            "connect-src 'self' ws: wss: https://raven-klqu.onrender.com https://*.netlify.app https://*.netlify.com;"
+            "connect-src 'self' ws: wss: http://localhost:* http://127.0.0.1:* "
+            "https://raven-klqu.onrender.com https://*.netlify.app https://*.netlify.com "
+            "https://proximusraven.app.n8n.cloud;"
         )
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         return response
@@ -916,8 +925,17 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
 
+    # Pre-load YOLO model for in-process frame filtering
+    from backend.services.yolo_filter import _get_model
+    _get_model()
+    logger.info("YOLOv8 model pre-loaded for in-process detection")
+
     # Create evidence store directory
     Path(settings.evidence_store_path).mkdir(parents=True, exist_ok=True)
+
+    # Ensure OpenClaw Gateway is running before bridge connects
+    from backend.openclaw.gateway import ensure_openclaw_gateway, shutdown_openclaw_gateway
+    await ensure_openclaw_gateway()
 
     # Start OpenClaw AgentX bridge background task
     from backend.openclaw.bridge import start_openclaw_bridge
@@ -931,6 +949,7 @@ async def lifespan(app: FastAPI):
         await bridge_task
     except asyncio.CancelledError:
         pass
+    await shutdown_openclaw_gateway()
     logger.info("OpenClaw AgentX bridge task stopped")
     logger.info("Raven AI CCTV shutting down")
 
@@ -971,7 +990,8 @@ app.include_router(audit.router)
 app.include_router(biometrics.router)
 app.include_router(rf.router)
 
-
+from backend.routers import debug as debug_router
+app.include_router(debug_router.router)
 
 # ── Health Check ─────────────────────────────────────────────────────────────
 @app.get("/api/health", tags=["system"])
@@ -1541,6 +1561,27 @@ class ConnectionManager:
             "data": telemetry_data,
         })
 
+    async def broadcast_detection(self, detection_data: dict[str, Any]) -> None:
+        """Broadcast YOLO pre-filter detections (before Qwen-VL reasoning)."""
+        await self.broadcast({
+            "event": "yolo_detection",
+            "data": detection_data,
+        })
+
+    async def broadcast_frame_skipped(self, skip_data: dict[str, Any]) -> None:
+        """Broadcast when a frame is dropped by the YOLO pre-filter."""
+        await self.broadcast({
+            "event": "frame_skipped",
+            "data": skip_data,
+        })
+
+    async def broadcast_pipeline_log(self, log_data: dict[str, Any]) -> None:
+        """Broadcast pipeline activity for the debug console."""
+        await self.broadcast({
+            "event": "pipeline_log",
+            "data": log_data,
+        })
+
     @property
     def connection_count(self) -> int:
         return len(self.active_connections)
@@ -1568,6 +1609,7 @@ import sys
 import json
 import logging
 import asyncio
+import base64
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1579,14 +1621,45 @@ from backend.database import AsyncSessionLocal
 from backend.models import Incident, Camera, IncidentStatus, SeverityLevel
 from backend.services.rf_sensor import RFSensorService
 from backend.services import qwen_vl, qwen_plus, alert_dispatch
+from backend.services.yolo_filter import detect_targets, detections_to_boxes
+from backend.ws_manager import ws_manager
+from backend.routers.debug import append_debug_log
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-YOLO_SERVER_PATH = str(PROJECT_ROOT / "backend" / "openclaw" / "mcp_yolo.py")
 BIOMETRICS_SERVER_PATH = str(PROJECT_ROOT / "backend" / "openclaw" / "mcp_biometrics.py")
 FORENSICS_SERVER_PATH = str(PROJECT_ROOT / "backend" / "openclaw" / "mcp_forensics.py")
+
+
+async def run_yolo_inprocess(image_b64: str) -> dict:
+    """
+    Run YOLO pre-filter in-process using the persistent lazy-loaded model.
+    Avoids spawning a subprocess per frame.
+    """
+    import numpy as np
+    import cv2
+
+    if "," in image_b64:
+        image_b64 = image_b64.split(",")[1]
+
+    img_bytes = base64.b64decode(image_b64)
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    if frame is None:
+        return {"has_targets": False, "detections": [], "error": "Invalid image data"}
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, detect_targets, frame)
+    boxes = detections_to_boxes(result)
+    return {
+        "has_targets": result.has_targets,
+        "detections": boxes,
+        "frame_width": result.frame_width,
+        "frame_height": result.frame_height,
+    }
 
 async def call_mcp_tool_stdio(script_path: str, tool_name: str, arguments: dict) -> dict:
     """Invokes a local MCP server subprocess via standard JSON-RPC over stdio."""
@@ -1650,8 +1723,8 @@ class AgentXRuntime:
         # 2. Planner: sequence tools and check RF Telemetry
         plan = await AgentXRuntime.planner_sequence(camera_id, subtasks)
         
-        # 3. Executor: execute planned tools via stdio MCP servers
-        results = await AgentXRuntime.executor_run(image_b64, plan)
+        # 3. Executor: execute planned tools
+        results = await AgentXRuntime.executor_run(camera_id, image_b64, plan)
         
         # 4. Supervisor: Verify outcomes against rules.md and compile database incident
         final_incident = await AgentXRuntime.supervisor_verify(camera_id, image_b64, results)
@@ -1706,22 +1779,42 @@ class AgentXRuntime:
         }
 
     @staticmethod
-    async def executor_run(image_b64: str, plan: dict) -> dict:
-        """Executor agent runs the tools via MCP Servers."""
+    async def executor_run(camera_id: int, image_b64: str, plan: dict) -> dict:
+        """Executor agent runs tools — YOLO in-process, biometrics via MCP."""
         results = {"rf_correlation": plan["rf_correlation"]}
-        
-        # Step 1: Run YOLO object detection
+
+        # Step 1: YOLO object detection (persistent in-process model)
         if "yolo_prefilter" in plan["sequence"]:
-            logger.info("[AgentX Executor] Launching mcp_yolo.py -> detect_objects")
-            yolo_res = await call_mcp_tool_stdio(YOLO_SERVER_PATH, "detect_objects", {"image_b64": image_b64})
+            logger.info("[AgentX Executor] Running YOLO pre-filter (in-process)")
+            append_debug_log("INFO", "AgentX/YOLO", f"Scanning frame from CAM-{camera_id:02d}")
+            yolo_res = await run_yolo_inprocess(image_b64)
             results["yolo"] = yolo_res
-            
-            # If no targets detected, we stop execution here to prevent context bloat & cost
-            if not yolo_res.get("has_targets", True):
-                logger.info("[AgentX Executor] YOLO reports no targets detected. Terminating execution loop.")
+
+            if yolo_res.get("has_targets"):
+                detections = yolo_res.get("detections", [])
+                labels = ", ".join({d["label"] for d in detections}) or "object"
+                append_debug_log(
+                    "INFO", "AgentX/YOLO",
+                    f"Detection on CAM-{camera_id:02d}: {labels}",
+                    detections=len(detections),
+                )
+                await ws_manager.broadcast_detection({
+                    "camera_id": camera_id,
+                    "detections": detections,
+                    "labels": labels,
+                    "frame_width": yolo_res.get("frame_width", 640),
+                    "frame_height": yolo_res.get("frame_height", 480),
+                })
+            else:
+                append_debug_log("DEBUG", "AgentX/YOLO", f"No targets on CAM-{camera_id:02d} — frame skipped")
+                await ws_manager.broadcast_frame_skipped({
+                    "camera_id": camera_id,
+                    "reason": "No person/vehicle detected by YOLO pre-filter",
+                })
+                logger.info("[AgentX Executor] YOLO reports no targets. Terminating execution loop.")
                 return results
 
-        # Step 2: Run Biometric face matcher
+        # Step 2: Biometric face matcher (MCP subprocess — infrequent)
         if "biometric_check" in plan["sequence"]:
             logger.info("[AgentX Executor] Launching mcp_biometrics.py -> match_biometric_face")
             bio_res = await call_mcp_tool_stdio(BIOMETRICS_SERVER_PATH, "match_biometric_face", {"image_b64": image_b64})
@@ -1737,9 +1830,10 @@ class AgentXRuntime:
         # Handle early termination (skipped frame)
         if "yolo" in executor_results and not executor_results["yolo"].get("has_targets", True):
             return {"status": "skipped", "reason": "YOLO pre-filter returned no targets"}
-            
+
         rf_conf = executor_results.get("rf_correlation", {})
         matched_faces = executor_results.get("biometrics", {}).get("detections", [])
+        yolo_boxes = executor_results.get("yolo", {}).get("detections", [])
         
         # 1. Run Qwen-VL-Max vision analysis
         logger.info("[AgentX Supervisor] Ingesting frame to Qwen-VL-Max...")
@@ -1814,7 +1908,6 @@ class AgentXRuntime:
                 logger.error(f"Alert dispatch error: {e}")
                 
             # Broadcast on WebSocket
-            from backend.ws_manager import ws_manager
             await ws_manager.broadcast_incident({
                 "id": inc.id,
                 "camera_id": camera_id,
@@ -1823,8 +1916,15 @@ class AgentXRuntime:
                 "timestamp": inc.timestamp.isoformat(),
                 "status": inc.status.value,
                 "biometrics_matched": matched_faces,
-                "bounding_boxes": getattr(analysis, "bounding_boxes", [])
+                "bounding_boxes": yolo_boxes or getattr(analysis, "bounding_boxes", []),
             })
+
+            append_debug_log(
+                "WARN" if inc.severity and inc.severity.value in ("CRITICAL", "HIGH") else "INFO",
+                "AgentX/Supervisor",
+                f"Incident #{inc.id} · {inc.threat_type} · {inc.severity.value if inc.severity else 'UNKNOWN'}",
+                incident_id=inc.id,
+            )
             
             logger.info(f"[AgentX Supervisor] Security incident #{inc.id} validated, logged, and broadcasted.")
             return {
@@ -1857,35 +1957,33 @@ from backend.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-OPENCLAW_WS_URL = "ws://127.0.0.1:18789"
-
 async def start_openclaw_bridge():
     """Main loop connecting and listening to the OpenClaw Gateway WebSocket."""
     if not settings.openclaw_gateway_token:
         if not settings.demo_mode:
-            logger.error("CRITICAL: openclaw_gateway_token is not configured. Skipping OpenClaw gateway connection.")
+            logger.error(
+                "CRITICAL: OPENCLAW_GATEWAY_TOKEN is not configured. "
+                "Set it in .env — skipping OpenClaw gateway connection."
+            )
             return
-        else:
-            logger.warning("DEMO_MODE: openclaw_gateway_token is unset. Falling back to demo gateway token.")
+        logger.warning(
+            "DEMO_MODE: OPENCLAW_GATEWAY_TOKEN is unset — bridge will connect without auth token."
+        )
 
-    token_to_use = settings.openclaw_gateway_token or "c2dae22b5ee180a947c0b1c38d718e7464dcb24b453f1bef"
+    token_to_use = settings.openclaw_gateway_token or None
+    gateway_url = settings.openclaw_gateway_url
     retry_delay = 2.0
     
     while True:
         try:
-            logger.info(f"Connecting to OpenClaw Gateway at {OPENCLAW_WS_URL}...")
-            async with websockets.connect(OPENCLAW_WS_URL) as ws:
+            logger.info("Connecting to OpenClaw Gateway at %s...", gateway_url)
+            async with websockets.connect(gateway_url) as ws:
                 logger.info("WebSocket connected. Sending authentication handshake...")
-                
-                # Send the connect/auth payload
-                handshake = {
-                    "event": "connect",
-                    "data": {
-                        "auth": {
-                            "token": token_to_use
-                        }
-                    }
-                }
+
+                handshake_data: dict = {}
+                if token_to_use:
+                    handshake_data["auth"] = {"token": token_to_use}
+                handshake = {"event": "connect", "data": handshake_data}
                 await ws.send(json.dumps(handshake))
                 
                 # Reset retry delay on successful connection
@@ -1923,6 +2021,93 @@ async def start_openclaw_bridge():
             
         await asyncio.sleep(retry_delay)
         retry_delay = min(retry_delay * 2, 60.0)  # Exponential backoff capped at 60s
+
+
+========================================================================
+FILE: backend/openclaw/gateway.py
+========================================================================
+"""
+Raven AI CCTV — OpenClaw Gateway lifecycle helpers.
+Checks gateway health and auto-starts when unreachable.
+"""
+import asyncio
+import logging
+
+import websockets
+
+from backend.config import get_settings
+
+logger = logging.getLogger(__name__)
+settings = get_settings()
+
+_gateway_process: asyncio.subprocess.Process | None = None
+
+
+async def is_gateway_reachable(timeout: float = 2.0) -> bool:
+    """Return True if the OpenClaw WebSocket gateway accepts connections."""
+    url = settings.openclaw_gateway_url
+    try:
+        async with websockets.connect(url, open_timeout=timeout, close_timeout=1):
+            return True
+    except Exception:
+        return False
+
+
+async def ensure_openclaw_gateway() -> asyncio.subprocess.Process | None:
+    """
+    Start `openclaw gateway start` if the gateway is not already reachable.
+    Returns the subprocess handle when spawned, otherwise None.
+    """
+    global _gateway_process
+
+    if await is_gateway_reachable():
+        logger.info("OpenClaw Gateway already reachable at %s", settings.openclaw_gateway_url)
+        return None
+
+    logger.info("OpenClaw Gateway not reachable — launching: openclaw gateway start")
+    try:
+        _gateway_process = await asyncio.create_subprocess_exec(
+            "openclaw",
+            "gateway",
+            "start",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        logger.warning(
+            "openclaw CLI not found on PATH — gateway auto-start skipped. "
+            "Install OpenClaw or start the gateway manually."
+        )
+        return None
+    except Exception as e:
+        logger.error("Failed to spawn OpenClaw gateway: %s", e)
+        return None
+
+    for attempt in range(20):
+        await asyncio.sleep(1)
+        if await is_gateway_reachable():
+            logger.info("OpenClaw Gateway started and verified (attempt %d)", attempt + 1)
+            return _gateway_process
+
+    logger.warning(
+        "OpenClaw Gateway subprocess started but not yet reachable after 20s — "
+        "bridge will retry connection."
+    )
+    return _gateway_process
+
+
+async def shutdown_openclaw_gateway() -> None:
+    """Terminate auto-started gateway subprocess on app shutdown."""
+    global _gateway_process
+    if _gateway_process and _gateway_process.returncode is None:
+        logger.info("Stopping auto-started OpenClaw Gateway subprocess")
+        _gateway_process.terminate()
+        try:
+            await asyncio.wait_for(_gateway_process.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            _gateway_process.kill()
+            await _gateway_process.wait()
+    _gateway_process = None
 
 
 ========================================================================
@@ -2252,7 +2437,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from backend.openclaw.mcp_helper import MCPServer
-from backend.services.yolo_filter import detect_targets, detections_to_boxes
+from backend.services.yolo_filter import detect_targets, detections_to_boxes, _get_model
+
+# Pre-load YOLO weights once at MCP server startup (persistent model instance)
+_get_model()
 
 server = MCPServer("yolo-filter-mcp")
 
@@ -2772,6 +2960,90 @@ async def delete_camera(
 
 
 ========================================================================
+FILE: backend/routers/debug.py
+========================================================================
+"""
+Raven AI CCTV — Debug / Diagnostics Router
+GET /api/debug/status — aggregated system state for the debug console
+"""
+import logging
+from collections import deque
+from datetime import datetime, timezone
+
+from fastapi import APIRouter
+
+from backend.config import get_settings
+
+router = APIRouter(prefix="/api/debug", tags=["debug"])
+logger = logging.getLogger(__name__)
+
+# Ring buffer for recent pipeline log lines (shared with AgentX runtime)
+DEBUG_LOG_BUFFER: deque[dict] = deque(maxlen=500)
+
+
+def append_debug_log(level: str, source: str, message: str, **extra) -> None:
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "source": source,
+        "message": message,
+        **extra,
+    }
+    DEBUG_LOG_BUFFER.appendleft(entry)
+
+
+@router.get("/status")
+async def debug_status():
+    """Return aggregated health, pipeline, and OpenClaw state."""
+    from backend.openclaw.gateway import is_gateway_reachable
+    from backend.database import AsyncSessionLocal
+    from backend.models import Camera, Incident, IncidentStatus
+    from backend.services.yolo_filter import _get_model
+    from sqlalchemy import select, func
+    from datetime import date
+
+    settings = get_settings()
+    gateway_ok = await is_gateway_reachable(timeout=1.5)
+
+    async with AsyncSessionLocal() as db:
+        cameras = await db.scalar(select(func.count(Camera.id)))
+        pending = await db.scalar(
+            select(func.count(Incident.id)).where(Incident.status == IncidentStatus.PENDING)
+        )
+
+    yolo_loaded = _get_model() is not None
+
+    return {
+        "service": "Raven AI CCTV",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "demo_mode": settings.demo_mode,
+        "openclaw_gateway": {
+            "url": settings.openclaw_gateway_url,
+            "reachable": gateway_ok,
+            "token_configured": bool(settings.openclaw_gateway_token),
+        },
+        "qwen": {
+            "configured": settings.is_qwen_configured,
+            "model": settings.qwen_vl_model,
+            "base_url": settings.dashscope_openai_base_url,
+        },
+        "yolo": {"model_loaded": yolo_loaded},
+        "pipeline": {
+            "cameras_active": cameras or 0,
+            "pending_review": pending or 0,
+        },
+        "ws_connections": __import__("backend.ws_manager", fromlist=["ws_manager"]).ws_manager.connection_count,
+    }
+
+
+@router.get("/logs")
+async def debug_logs(limit: int = 100):
+    """Return recent pipeline log entries."""
+    limit = min(max(limit, 1), 500)
+    return {"logs": list(DEBUG_LOG_BUFFER)[:limit]}
+
+
+========================================================================
 FILE: backend/routers/evidence.py
 ========================================================================
 """
@@ -2871,16 +3143,18 @@ from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.auth import require_operator, require_role
+from backend.auth import require_operator, require_role, get_current_operator
 from backend.database import get_db
 from backend.models import Alert, AlertChannel, Camera, Incident, IncidentStatus, Operator, SeverityLevel
 from backend.schemas import AnalyzeFrameRequest, IncidentDecision, IncidentOut
 from backend.services import alert_dispatch, evidence_package, qwen_plus, qwen_vl
 from backend.services.hitl import HITLWorkflow
+from backend.config import get_settings
 from backend.ws_manager import ws_manager
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 def _incident_to_dict(inc: Incident) -> dict:
@@ -3055,77 +3329,36 @@ async def escalate_incident(
 async def analyze_frame(
     body: AnalyzeFrameRequest,
     db: AsyncSession = Depends(get_db),
-    operator: Operator = Depends(require_operator),
+    operator: Operator | None = Depends(get_current_operator),
 ):
     """
-    Manually submit a base64 frame for full pipeline processing.
-    Creates an Incident record and triggers Qwen-VL analysis.
+    Submit a base64 frame for full AgentX pipeline processing.
+    YOLO pre-filter → biometrics → Qwen-VL-Max (only if targets detected).
     """
+    if operator is None and not settings.demo_mode:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
     camera = await db.get(Camera, body.camera_id)
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
 
-    # Run Qwen-VL analysis
-    analysis = await qwen_vl.analyze_frame(
-        body.image_b64,
-        camera.name,
-        camera.location,
-    )
+    from backend.openclaw.agentx_runtime import AgentXRuntime
 
-    # Persist incident
-    actors_json = json.dumps(analysis.actors_detected)
-    inc = Incident(
-        camera_id=camera.id,
-        timestamp=datetime.now(timezone.utc),
-        threat_type=analysis.threat_type,
-        severity=analysis.severity,
-        severity_score=analysis.severity_score,
-        actors_detected=actors_json,
-        scene_description=analysis.scene_description,
-        qwen_reasoning=analysis.qwen_reasoning,
-        confidence=analysis.confidence,
-        status=IncidentStatus.PENDING,
-        tokens_used=getattr(analysis, "tokens_used", None),
-        api_cost_usd=getattr(analysis, "api_cost_usd", None),
-    )
-    db.add(inc)
-    await db.flush()
+    result = await AgentXRuntime.run_agentx_pipeline(body.camera_id, body.image_b64)
 
-    # Save frame image
-    from backend.services.evidence_package import save_incident_frame
-    frame_path = save_incident_frame(inc.id, body.image_b64)
-    inc.frame_path = frame_path
+    if result.get("status") == "skipped":
+        return {
+            "status": "skipped",
+            "reason": result.get("reason"),
+            "camera_id": body.camera_id,
+        }
 
-    # Generate report
-    try:
-        rep_en, rep_sw = await qwen_plus.generate_incident_report(
-            analysis, camera.name, camera.location, inc.timestamp
-        )
-        inc.report_en = rep_en
-        inc.report_sw = rep_sw
-    except Exception as e:
-        logger.error(f"Report generation error: {e}")
+    if result.get("status") == "ok" and result.get("incident_id"):
+        inc = await db.get(Incident, result["incident_id"])
+        if inc:
+            return _incident_to_dict(inc)
 
-    await db.commit()
-    await db.refresh(inc)
-
-    # Dispatch alerts
-    try:
-        alert_records = await alert_dispatch.dispatch_alerts(
-            inc.id, inc.severity, inc.threat_type or "Unknown",
-            camera.location, inc.scene_description or "", inc.report_en
-        )
-        for ar in alert_records:
-            alert = Alert(incident_id=inc.id, **ar)
-            db.add(alert)
-        await db.commit()
-    except Exception as e:
-        logger.error(f"Alert dispatch error: {e}")
-
-    # Broadcast to SOC dashboard
-    await ws_manager.broadcast_incident(_incident_to_dict(inc))
-
-    return _incident_to_dict(inc)
+    return result
 
 
 @router.get("/{incident_id}/trajectory")
@@ -4550,7 +4783,7 @@ async def semantic_search(query: str) -> tuple[str, str]:
 async def _call_qwen_plus_with_retry(payload: dict) -> dict:
     import httpx
     import asyncio
-    url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+    url = f"{settings.dashscope_openai_base_url.rstrip('/')}/chat/completions"
     headers = {
         "Authorization": f"Bearer {settings.dashscope_api_key}",
         "Content-Type": "application/json"
@@ -4819,7 +5052,7 @@ async def analyze_frame(
 async def _call_qwen_vl_with_retry(payload: dict) -> dict:
     import httpx
     import asyncio
-    url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+    url = f"{settings.dashscope_openai_base_url.rstrip('/')}/chat/completions"
     headers = {
         "Authorization": f"Bearer {settings.dashscope_api_key}",
         "Content-Type": "application/json"
@@ -13227,8 +13460,12 @@ async function sendText() {
 FILE: frontend/app.js
 ========================================================================
 (function() {
-  const API_BASE = 'https://raven-klqu.onrender.com';
-  const WS_URL = 'wss://raven-klqu.onrender.com/ws/soc';
+  const PRODUCTION_API = 'https://raven-klqu.onrender.com';
+  const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? window.location.origin
+    : PRODUCTION_API;
+  const WS_URL = API_BASE.replace(/^http/, 'ws') + '/ws/soc';
+  window.API_BASE = API_BASE;
 
   // Authentication State (In-Memory Module Variables)
   let accessToken = null;
@@ -13376,7 +13613,8 @@ FILE: frontend/app.js
     viewMode: 'ALL', // 'ALL' or 'PENDING'
     chart: null, // Threat heatmap chart (Chart.js)
     rfChart: null, // RF signal chart (Chart.js)
-    currentView: 'dashboard' // 'dashboard', 'camera', 'ledger', 'rf', 'biometrics', 'farm-calendar', 'farm-agent', 'farm-graph'
+    currentView: 'dashboard', // 'dashboard', 'camera', 'ledger', 'rf', 'biometrics', 'farm-calendar', 'farm-agent', 'farm-graph', 'debug'
+    activityAutoScrollTimer: null
   };
 
   // WebSocket Connection
@@ -13401,6 +13639,7 @@ FILE: frontend/app.js
     navBtnFarmCalendar: document.getElementById('nav-btn-farm-calendar'),
     navBtnFarmAgent: document.getElementById('nav-btn-farm-agent'),
     navBtnFarmGraph: document.getElementById('nav-btn-farm-graph'),
+    navBtnDebug: document.getElementById('nav-btn-debug'),
 
     // View Sections
     viewDashboard: document.getElementById('view-dashboard'),
@@ -13411,11 +13650,15 @@ FILE: frontend/app.js
     viewFarmCalendar: document.getElementById('view-farm-calendar'),
     viewFarmAgent: document.getElementById('view-farm-agent'),
     viewFarmGraph: document.getElementById('view-farm-graph'),
+    viewDebug: document.getElementById('view-debug'),
 
     // 3D Cloud Dashboard View
     btnCloudLayers: document.getElementById('btn-cloud-layers'),
     cloudLayersDropdown: document.getElementById('cloud-layers-dropdown'),
     dashboardActivityList: document.getElementById('dashboard-activity-list'),
+    activityScrollPrev: document.getElementById('activity-scroll-prev'),
+    activityScrollNext: document.getElementById('activity-scroll-next'),
+    ledgerActivityList: document.getElementById('ledger-activity-list'),
     
     // Stats Mini Cards
     statHazardous: document.getElementById('stat-hazardous'),
@@ -13481,13 +13724,78 @@ FILE: frontend/app.js
 
   // ─── INITIALIZE ───────────────────────────────────────────────────────────
   function init() {
+    initTheme();
     setupEventListeners();
     connectWebSocket();
     startCountdown();
     refreshDashboard();
     initLeafletMap();
+    initMapFullscreen();
     initCharts();
     updateLastUpdatedTime();
+    setupActivityScroll();
+  }
+
+  function setupActivityScroll() {
+    const list = els.dashboardActivityList;
+    if (!list) return;
+
+    const scrollBy = () => {
+      const w = list.clientWidth || 280;
+      list.scrollBy({ left: w, behavior: 'smooth' });
+      if (list.scrollLeft + list.clientWidth >= list.scrollWidth - 4) {
+        list.scrollTo({ left: 0, behavior: 'smooth' });
+      }
+    };
+
+    if (els.activityScrollPrev) {
+      els.activityScrollPrev.addEventListener('click', () => {
+        const w = list.clientWidth || 280;
+        list.scrollBy({ left: -w, behavior: 'smooth' });
+      });
+    }
+    if (els.activityScrollNext) {
+      els.activityScrollNext.addEventListener('click', () => {
+        scrollBy();
+      });
+    }
+  }
+
+  function updateActivityScrollControls() {
+    const list = els.dashboardActivityList;
+    if (!list || !els.activityScrollPrev || !els.activityScrollNext) return;
+    const overflow = list.scrollWidth > list.clientWidth + 2;
+    els.activityScrollPrev.classList.toggle('hidden', !overflow);
+    els.activityScrollNext.classList.toggle('hidden', !overflow);
+
+    if (state.activityAutoScrollTimer) {
+      clearInterval(state.activityAutoScrollTimer);
+      state.activityAutoScrollTimer = null;
+    }
+    if (overflow && list.children.length > 1) {
+      state.activityAutoScrollTimer = setInterval(() => {
+        const w = list.clientWidth || 280;
+        list.scrollBy({ left: w, behavior: 'smooth' });
+        if (list.scrollLeft + list.clientWidth >= list.scrollWidth - 4) {
+          setTimeout(() => list.scrollTo({ left: 0, behavior: 'smooth' }), 600);
+        }
+      }, 4500);
+    }
+  }
+
+  function initTheme() {
+    const saved = localStorage.getItem('raven-theme');
+    const theme = saved === 'dark' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', theme);
+    const btn = document.getElementById('btn-theme-toggle');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        const current = document.documentElement.getAttribute('data-theme');
+        const next = current === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('raven-theme', next);
+      });
+    }
   }
 
   // ─── EVENT LISTENERS ──────────────────────────────────────────────────────
@@ -13501,6 +13809,7 @@ FILE: frontend/app.js
     els.navBtnFarmCalendar.addEventListener('click', () => switchView('farm-calendar'));
     els.navBtnFarmAgent.addEventListener('click', () => switchView('farm-agent'));
     els.navBtnFarmGraph.addEventListener('click', () => switchView('farm-graph'));
+    if (els.navBtnDebug) els.navBtnDebug.addEventListener('click', () => switchView('debug'));
 
     // Verify Audit Modal Trigger
     els.btnVerifyAudit.addEventListener('click', triggerAuditVerification);
@@ -13641,6 +13950,7 @@ FILE: frontend/app.js
     if (els.navBtnFarmCalendar) els.navBtnFarmCalendar.classList.remove('active');
     if (els.navBtnFarmAgent) els.navBtnFarmAgent.classList.remove('active');
     if (els.navBtnFarmGraph) els.navBtnFarmGraph.classList.remove('active');
+    if (els.navBtnDebug) els.navBtnDebug.classList.remove('active');
 
     // Reset active sections
     els.viewDashboard.classList.remove('active');
@@ -13651,6 +13961,7 @@ FILE: frontend/app.js
     if (els.viewFarmCalendar) els.viewFarmCalendar.classList.remove('active');
     if (els.viewFarmAgent) els.viewFarmAgent.classList.remove('active');
     if (els.viewFarmGraph) els.viewFarmGraph.classList.remove('active');
+    if (els.viewDebug) els.viewDebug.classList.remove('active');
 
     // Enable the selected view
     if (viewName === 'dashboard') {
@@ -13666,6 +13977,7 @@ FILE: frontend/app.js
     } else if (viewName === 'ledger') {
       els.navBtnLedger.classList.add('active');
       els.viewLedger.classList.add('active');
+      renderLedgerActivityCards();
       if (state.chart) state.chart.update();
     } else if (viewName === 'rf') {
       els.navBtnRf.classList.add('active');
@@ -13685,12 +13997,14 @@ FILE: frontend/app.js
     } else if (viewName === 'farm-agent') {
       if (els.navBtnFarmAgent) els.navBtnFarmAgent.classList.add('active');
       if (els.viewFarmAgent) els.viewFarmAgent.classList.add('active');
-      // open the agent overlay automatically
-      const ao = document.getElementById('agentOverlay');
-      if (ao) ao.classList.add('open');
     } else if (viewName === 'farm-graph') {
       if (els.navBtnFarmGraph) els.navBtnFarmGraph.classList.add('active');
       if (els.viewFarmGraph) els.viewFarmGraph.classList.add('active');
+    } else if (viewName === 'debug') {
+      if (els.navBtnDebug) els.navBtnDebug.classList.add('active');
+      if (els.viewDebug) els.viewDebug.classList.add('active');
+      if (typeof window.ravenDebugRefresh === 'function') window.ravenDebugRefresh();
+      if (typeof window.ravenDebugRenderLogs === 'function') window.ravenDebugRenderLogs();
     }
   }
 
@@ -13851,10 +14165,10 @@ FILE: frontend/app.js
       preferCanvas: true
     });
 
-    // Dark CartoDB tile layer
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      subdomains: 'abcd',
-      maxZoom: 20
+    // Dark CartoDB tile layer → Esri World Imagery (satellite)
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri'
     }).addTo(leafletMap);
 
     // Zoom control bottom-right
@@ -13913,6 +14227,30 @@ FILE: frontend/app.js
     });
   }
 
+  function initMapFullscreen() {
+    const btn = document.getElementById('btn-map-fullscreen');
+    const cardBody = document.getElementById('map-card-body');
+    if (!btn || !cardBody) return;
+
+    btn.addEventListener('click', () => {
+      if (!document.fullscreenElement) {
+        cardBody.requestFullscreen().then(() => {
+          if (leafletMap) setTimeout(() => leafletMap.invalidateSize(), 200);
+        }).catch(err => console.warn('Fullscreen failed:', err));
+      } else {
+        document.exitFullscreen();
+      }
+    });
+
+    document.addEventListener('fullscreenchange', () => {
+      const isFs = document.fullscreenElement === cardBody;
+      btn.title = isFs ? 'Exit fullscreen' : 'Fullscreen map';
+      const useEl = btn.querySelector('use');
+      if (useEl) useEl.setAttribute('href', isFs ? '#ico-compress' : '#ico-expand');
+      if (leafletMap) setTimeout(() => leafletMap.invalidateSize(), 200);
+    });
+  }
+
   // ─── WEBSOCKET LOGIC ──────────────────────────────────────────────────────
   function connectWebSocket() {
     if (ws) {
@@ -13961,26 +14299,62 @@ FILE: frontend/app.js
   function handleWSMessage(msg) {
     if (msg.event === 'pong') return;
 
+    if (typeof window.ravenAppendLog === 'function') {
+      window.ravenAppendLog('INFO', 'WebSocket', `${msg.event}`, msg.data);
+    }
+
+    if (msg.event === 'yolo_detection') {
+      const data = msg.data || {};
+      const camId = data.camera_id;
+      const labels = data.labels || 'object';
+      if (window.cameraSimulator && camId) {
+        window.cameraSimulator.setBoundingBoxes(camId, data.detections || [], data.frame_width, data.frame_height);
+      }
+      showToast(
+        'Detection',
+        `${labels} detected on CAM-${String(camId).padStart(2, '0')}`,
+        'MEDIUM'
+      );
+      return;
+    }
+
+    if (msg.event === 'frame_skipped') {
+      const data = msg.data || {};
+      showToast(
+        'Frame Skipped',
+        data.reason || `No targets on CAM-${String(data.camera_id).padStart(2, '0')}`,
+        'info'
+      );
+      return;
+    }
+
+    if (msg.event === 'pipeline_log') {
+      const data = msg.data || {};
+      if (typeof window.ravenAppendLog === 'function') {
+        window.ravenAppendLog(data.level || 'INFO', data.source || 'Pipeline', data.message || '');
+      }
+      return;
+    }
+
     if (msg.event === 'incident_new' || msg.event === 'incident') {
       const incident = msg.data;
-      
-      // Visual Alert Highlight on Camera tile
+
       if (window.cameraSimulator) {
         window.cameraSimulator.triggerAlert(incident.camera_id, incident.severity);
-        if (incident.qwen_reasoning) {
-          try {
-            const rawBoxes = incident.bounding_boxes || [];
-            window.cameraSimulator.setBoundingBoxes(incident.camera_id, rawBoxes);
-          } catch(e) {}
+        const rawBoxes = incident.bounding_boxes || [];
+        if (rawBoxes.length) {
+          window.cameraSimulator.setBoundingBoxes(incident.camera_id, rawBoxes);
         }
-        // Load frame
         window.cameraSimulator.setFeedImage(incident.camera_id, `${API_BASE}/api/incidents/${incident.id}/frame`);
       }
 
+      const sev = incident.severity || 'info';
+      const isCritical = String(sev).toUpperCase() === 'CRITICAL';
       showToast(
-        `[${incident.severity}] ${incident.threat_type || 'Threat Detected'}`,
-        `Camera #${incident.camera_id} reported activity. Awaiting operator validation.`,
-        incident.severity
+        isCritical ? 'Security Alert' : `[${sev}] ${incident.threat_type || 'Threat Detected'}`,
+        `Camera #${incident.camera_id} · Incident #${incident.id} · Awaiting operator validation.`,
+        sev,
+        isCritical
       );
 
       // Biometrics Registry matches
@@ -14070,9 +14444,11 @@ FILE: frontend/app.js
   }
 
   // ─── TOAST NOTIFICATION ───────────────────────────────────────────────────
-  function showToast(title, message, severity = "info") {
+  function showToast(title, message, severity = "info", persistent = false) {
     const toast = document.createElement('div');
-    toast.className = `toast toast-${severity.toLowerCase()}`;
+    const sevUpper = String(severity).toUpperCase();
+    const isPersistent = persistent || sevUpper === 'CRITICAL';
+    toast.className = `toast toast-${severity.toLowerCase()}${isPersistent ? ' toast-persistent' : ''}`;
     
     // Inline SVG icons — no CDN dependency
     const ICONS = {
@@ -14095,16 +14471,22 @@ FILE: frontend/app.js
     `;
 
     els.toastContainer.appendChild(toast);
+
+    if (typeof window.ravenAppendLog === 'function') {
+      window.ravenAppendLog(sevUpper === 'CRITICAL' ? 'WARN' : 'INFO', 'Toast', `${title}: ${message}`);
+    }
     
     toast.querySelector('.toast-close').addEventListener('click', () => {
       toast.remove();
     });
 
-    setTimeout(() => {
-      if (toast.parentNode) {
-        toast.remove();
-      }
-    }, 8000);
+    if (!isPersistent) {
+      setTimeout(() => {
+        if (toast.parentNode) {
+          toast.remove();
+        }
+      }, 8000);
+    }
   }
 
   // ─── COUNTDOWN TIMER ──────────────────────────────────────────────────────
@@ -14189,6 +14571,7 @@ FILE: frontend/app.js
         els.statTotalTracks.textContent = state.incidents.length || 43;
 
         renderDashboardActivityFeed();
+        renderLedgerActivityCards();
         renderIncidentLedger();
         updateChartData();
       }
@@ -14204,6 +14587,61 @@ FILE: frontend/app.js
     info:         '<svg class="act-ico" style="color:#a29bfe;"><use href="#ico-circle"/></svg>',
   };
 
+  // ─── ACTIVITY ITEM BUILDER (shared dashboard + ledger) ───────────────────
+  function buildActivityMeta(inc) {
+    let iconKey = 'info';
+    let text = escapeHtml(inc.scene_description) || `Activity reported on Camera #${escapeHtml(inc.camera_id)}`;
+
+    if (inc.severity === 'CRITICAL') {
+      iconKey = 'hazardous';
+      text = inc.threat_type
+        ? `${escapeHtml(inc.threat_type)} detected on <strong>CAM-0${escapeHtml(inc.camera_id)}</strong>`
+        : text;
+    } else if (inc.severity === 'HIGH' || inc.severity === 'MEDIUM') {
+      iconKey = 'interruption';
+      text = inc.threat_type
+        ? `${escapeHtml(inc.threat_type)} at <strong>CAM-0${escapeHtml(inc.camera_id)}</strong>`
+        : text;
+    }
+
+    if (inc.qwen_reasoning) {
+      const snippet = escapeHtml(String(inc.qwen_reasoning).slice(0, 120));
+      text += ` — <em style="color:var(--text-secondary);font-style:normal;">${snippet}${inc.qwen_reasoning.length > 120 ? '…' : ''}</em>`;
+    }
+
+    const elapsed = Date.now() - new Date(inc.timestamp).getTime();
+    let timeStr = 'Just now';
+    if (elapsed > 60000) {
+      const mins = Math.floor(elapsed / 60000);
+      timeStr = mins === 1 ? '1 minute ago' : `${mins} minutes ago`;
+      if (mins >= 60) {
+        const hrs = Math.floor(mins / 60);
+        timeStr = hrs === 1 ? '1 hour ago' : `${hrs} hours ago`;
+        if (hrs >= 24) timeStr = new Date(inc.timestamp).toLocaleDateString();
+      }
+    }
+
+    return { iconKey, text, timeStr };
+  }
+
+  function createActivityItem(inc, opts = {}) {
+    const { iconKey, text, timeStr } = buildActivityMeta(inc);
+    const item = document.createElement('div');
+    item.className = 'activity-item';
+    item.innerHTML = `
+      <div class="activity-item-left">
+        <span class="activity-icon-wrap ${escapeHtml(iconKey)}">${ICON_SVG[iconKey]}</span>
+        <span class="activity-text"${opts.fullWidth ? '' : ' style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px;"'}>${text}</span>
+      </div>
+      <span class="activity-time">${escapeHtml(timeStr)}</span>
+    `;
+    item.addEventListener('click', () => {
+      switchView('camera');
+      selectIncident(inc);
+    });
+    return item;
+  }
+
   // ─── RENDER DASHBOARD ACTIVITY FEED (Bottom Center) ───────────────────────
   function renderDashboardActivityFeed() {
     const list = els.dashboardActivityList;
@@ -14212,100 +14650,45 @@ FILE: frontend/app.js
     list.innerHTML = '';
 
     if (state.incidents.length === 0) {
-      // Fallback static items using inline SVGs
       list.innerHTML = `
         <div class="activity-item">
           <div class="activity-item-left">
-            <span class="activity-icon-wrap hazardous">${ICON_SVG.hazardous}</span>
-            <span class="activity-text">Unauthorized Vehicle Access at <strong>CAM-03</strong></span>
+            <span class="activity-icon-wrap info">${ICON_SVG.info}</span>
+            <span class="activity-text">Awaiting backend analysis — upload a CCTV video or inject a test frame</span>
           </div>
-          <span class="activity-time">3 hours ago</span>
+          <span class="activity-time">—</span>
         </div>
-        <div class="activity-item">
-          <div class="activity-item-left">
-            <span class="activity-icon-wrap interruption">${ICON_SVG.interruption}</span>
-            <span class="activity-text">Perimeter Fence Damage at <strong>CAM-04</strong></span>
-          </div>
-          <span class="activity-time">16/08/2025</span>
-        </div>
+      `;
+      updateActivityScrollControls();
+      return;
+    }
+
+    state.incidents.slice(0, 12).forEach(inc => {
+      list.appendChild(createActivityItem(inc));
+    });
+    updateActivityScrollControls();
+  }
+
+  function renderLedgerActivityCards() {
+    const list = els.ledgerActivityList;
+    if (!list) return;
+    list.innerHTML = '';
+
+    if (state.incidents.length === 0) {
+      list.innerHTML = `
         <div class="activity-item">
           <div class="activity-item-left">
             <span class="activity-icon-wrap info">${ICON_SVG.info}</span>
-            <span class="activity-text">Unauthorized Vehicle Access at <strong>CAM-02</strong></span>
+            <span class="activity-text">No analysis results yet. Upload video on the 3D Cloud or Tactical Camera Grid to populate this feed.</span>
           </div>
-          <span class="activity-time">15/08/2025</span>
-        </div>
-        <div class="activity-item">
-          <div class="activity-item-left">
-            <span class="activity-icon-wrap interruption">${ICON_SVG.interruption}</span>
-            <span class="activity-text">Tailgating — Unauthorized Entry on <strong>CAM-01</strong></span>
-          </div>
-          <span class="activity-time">14/08/2025</span>
-        </div>
-        <div class="activity-item">
-          <div class="activity-item-left">
-            <span class="activity-icon-wrap info">${ICON_SVG.info}</span>
-            <span class="activity-text">Abandoned Object at <strong>CAM-02</strong></span>
-          </div>
-          <span class="activity-time">14/08/2025</span>
-        </div>
-        <div class="activity-item">
-          <div class="activity-item-left">
-            <span class="activity-icon-wrap hazardous">${ICON_SVG.hazardous}</span>
-            <span class="activity-text">Perimeter intrusion detected on <strong>CAM-01</strong></span>
-          </div>
-          <span class="activity-time">13/08/2025</span>
+          <span class="activity-time">—</span>
         </div>
       `;
       return;
     }
 
-    // Render first 7 incidents in activity feed list
-    state.incidents.slice(0, 7).forEach(inc => {
-      const item = document.createElement('div');
-      item.className = 'activity-item';
-
-      let iconKey = 'info';
-      let text = escapeHtml(inc.scene_description) || `Activity reported on Camera #${escapeHtml(inc.camera_id)}`;
-
-      if (inc.severity === 'CRITICAL') {
-        iconKey = 'hazardous';
-        text = inc.threat_type ? `${escapeHtml(inc.threat_type)} detected on <strong>CAM-0${escapeHtml(inc.camera_id)}</strong>` : text;
-      } else if (inc.severity === 'HIGH' || inc.severity === 'MEDIUM') {
-        iconKey = 'interruption';
-        text = inc.threat_type ? `${escapeHtml(inc.threat_type)} at <strong>CAM-0${escapeHtml(inc.camera_id)}</strong>` : text;
-      }
-
-      // Format time elapsed
-      const elapsed = Date.now() - new Date(inc.timestamp).getTime();
-      let timeStr = 'Just now';
-      if (elapsed > 60000) {
-        const mins = Math.floor(elapsed / 60000);
-        timeStr = mins === 1 ? '1 minute ago' : `${mins} minutes ago`;
-        if (mins >= 60) {
-          const hrs = Math.floor(mins / 60);
-          timeStr = hrs === 1 ? '1 hour ago' : `${hrs} hours ago`;
-          if (hrs >= 24) {
-            timeStr = new Date(inc.timestamp).toLocaleDateString();
-          }
-        }
-      }
-
-      item.innerHTML = `
-        <div class="activity-item-left">
-          <span class="activity-icon-wrap ${escapeHtml(iconKey)}">${ICON_SVG[iconKey]}</span>
-          <span class="activity-text" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px;">${text}</span>
-        </div>
-        <span class="activity-time">${escapeHtml(timeStr)}</span>
-      `;
-      
-      // Click to camera view + review
-      item.addEventListener('click', () => {
-        switchView('camera');
-        selectIncident(inc);
-      });
-
-      list.appendChild(item);
+    state.incidents.forEach(inc => {
+      list.appendChild(createActivityItem(inc, { fullWidth: true }));
     });
   }
 
@@ -14794,6 +15177,8 @@ FILE: frontend/app.js
   }
 
   // Load entry
+  window.refreshDashboard = refreshDashboard;
+  window.showToast = showToast;
   document.addEventListener('DOMContentLoaded', init);
 })();
 
@@ -14911,8 +15296,12 @@ class CameraSimulator {
    * Sets object detection bounding boxes on a camera.
    * Format: list of {label, x, y, w, h, conf}
    */
-  setBoundingBoxes(cameraId, boxes) {
-    this.bboxData[cameraId] = boxes || [];
+  setBoundingBoxes(cameraId, boxes, frameWidth, frameHeight) {
+    this.bboxData[cameraId] = {
+      boxes: boxes || [],
+      frameWidth: frameWidth || 640,
+      frameHeight: frameHeight || 480,
+    };
   }
 
   /**
@@ -14985,13 +15374,15 @@ class CameraSimulator {
       ctx.stroke();
 
       // Bounding boxes
-      const boxes = this.bboxData[id];
-      if (boxes && boxes.length > 0) {
-        boxes.forEach(box => {
-          // Normalize coordinates (input coordinates are assumed 640x400)
-          const scaleX = w / 640;
-          const scaleY = h / 400;
+      const bboxEntry = this.bboxData[id];
+      const boxes = bboxEntry && bboxEntry.boxes ? bboxEntry.boxes : [];
+      if (boxes.length > 0) {
+        const srcW = bboxEntry.frameWidth || 640;
+        const srcH = bboxEntry.frameHeight || 480;
+        const scaleX = w / srcW;
+        const scaleY = h / srcH;
 
+        boxes.forEach(box => {
           const bx = box.x * scaleX;
           const by = box.y * scaleY;
           const bw = box.w * scaleX;
@@ -15026,115 +15417,287 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
 ========================================================================
+FILE: frontend/debug-console.js
+========================================================================
+/**
+ * Raven AI CCTV — Debug Console
+ * Captures client-side logs, WebSocket events, and polls backend diagnostics.
+ */
+(function () {
+  const MAX_LOGS = 500;
+  const logs = [];
+
+  function appendLog(level, source, message, extra) {
+    const entry = {
+      timestamp: new Date().toISOString(),
+      level: (level || 'INFO').toUpperCase(),
+      source: source || 'App',
+      message: message || '',
+      extra: extra || null,
+    };
+    logs.unshift(entry);
+    if (logs.length > MAX_LOGS) logs.pop();
+    renderIfVisible();
+    return entry;
+  }
+
+  function levelClass(level) {
+    const l = (level || '').toUpperCase();
+    if (l === 'ERROR' || l === 'CRITICAL') return 'debug-log-error';
+    if (l === 'WARN') return 'debug-log-warn';
+    if (l === 'DEBUG') return 'debug-log-debug';
+    return 'debug-log-info';
+  }
+
+  function renderIfVisible() {
+    const view = document.getElementById('view-debug');
+    if (!view || !view.classList.contains('active')) return;
+    renderLogStream();
+  }
+
+  function renderLogStream() {
+    const el = document.getElementById('debug-log-stream');
+    if (!el) return;
+    el.innerHTML = logs.map((e) => {
+      const ts = e.timestamp.replace('T', ' ').slice(0, 19);
+      const extra = e.extra ? ` <span class="debug-log-extra">${escapeHtml(JSON.stringify(e.extra))}</span>` : '';
+      return `<div class="debug-log-line ${levelClass(e.level)}">` +
+        `<span class="debug-log-ts">${ts}</span>` +
+        `<span class="debug-log-src">[${escapeHtml(e.source)}]</span>` +
+        `<span class="debug-log-msg">${escapeHtml(e.message)}</span>${extra}` +
+        `</div>`;
+    }).join('');
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function renderStatus(data) {
+    const el = document.getElementById('debug-status-grid');
+    if (!el || !data) return;
+    const gw = data.openclaw_gateway || {};
+    const yolo = data.yolo || {};
+    const qwen = data.qwen || {};
+    const pipe = data.pipeline || {};
+    el.innerHTML = `
+      <div class="debug-stat"><span class="debug-stat-label">Demo Mode</span><span class="debug-stat-val">${data.demo_mode ? 'ON' : 'OFF'}</span></div>
+      <div class="debug-stat"><span class="debug-stat-label">OpenClaw Gateway</span><span class="debug-stat-val ${gw.reachable ? 'ok' : 'err'}">${gw.reachable ? 'REACHABLE' : 'DOWN'}</span></div>
+      <div class="debug-stat"><span class="debug-stat-label">Gateway URL</span><span class="debug-stat-val mono">${escapeHtml(gw.url || '—')}</span></div>
+      <div class="debug-stat"><span class="debug-stat-label">Gateway Token</span><span class="debug-stat-val">${gw.token_configured ? 'CONFIGURED' : 'MISSING'}</span></div>
+      <div class="debug-stat"><span class="debug-stat-label">YOLO Model</span><span class="debug-stat-val ${yolo.model_loaded ? 'ok' : 'warn'}">${yolo.model_loaded ? 'LOADED' : 'NOT LOADED'}</span></div>
+      <div class="debug-stat"><span class="debug-stat-label">Qwen API</span><span class="debug-stat-val">${qwen.configured ? 'LIVE' : 'MOCK'}</span></div>
+      <div class="debug-stat"><span class="debug-stat-label">DashScope URL</span><span class="debug-stat-val mono small">${escapeHtml(qwen.base_url || '—')}</span></div>
+      <div class="debug-stat"><span class="debug-stat-label">WS Clients</span><span class="debug-stat-val">${data.ws_connections ?? 0}</span></div>
+      <div class="debug-stat"><span class="debug-stat-label">Cameras</span><span class="debug-stat-val">${pipe.cameras_active ?? 0}</span></div>
+      <div class="debug-stat"><span class="debug-stat-label">Pending Review</span><span class="debug-stat-val">${pipe.pending_review ?? 0}</span></div>
+    `;
+  }
+
+  async function refreshStatus() {
+    const api = window.API_BASE || window.location.origin;
+    try {
+      const resp = await fetch(`${api}/api/debug/status`);
+      if (resp.ok) {
+        const data = await resp.json();
+        renderStatus(data);
+        appendLog('INFO', 'DebugConsole', 'Status refreshed');
+      }
+    } catch (e) {
+      appendLog('ERROR', 'DebugConsole', 'Failed to fetch /api/debug/status');
+    }
+
+    try {
+      const resp = await fetch(`${api}/api/debug/logs?limit=50`);
+      if (resp.ok) {
+        const data = await resp.json();
+        (data.logs || []).reverse().forEach((entry) => {
+          if (!logs.find((l) => l.timestamp === entry.timestamp && l.message === entry.message)) {
+            logs.unshift({
+              timestamp: entry.timestamp,
+              level: entry.level,
+              source: entry.source,
+              message: entry.message,
+              extra: entry,
+            });
+          }
+        });
+        while (logs.length > MAX_LOGS) logs.pop();
+        renderLogStream();
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  function initDebugConsole() {
+    const btnRefresh = document.getElementById('debug-btn-refresh');
+    const btnClear = document.getElementById('debug-btn-clear');
+    if (btnRefresh) btnRefresh.addEventListener('click', refreshStatus);
+    if (btnClear) btnClear.addEventListener('click', () => {
+      logs.length = 0;
+      renderLogStream();
+      appendLog('INFO', 'DebugConsole', 'Log buffer cleared');
+    });
+
+    // Intercept console methods
+    ['log', 'warn', 'error', 'info'].forEach((method) => {
+      const orig = console[method];
+      console[method] = function (...args) {
+        const level = method === 'error' ? 'ERROR' : method === 'warn' ? 'WARN' : 'INFO';
+        appendLog(level, 'Console', args.map(String).join(' '));
+        orig.apply(console, args);
+      };
+    });
+
+    appendLog('INFO', 'DebugConsole', 'Debug console initialized');
+    refreshStatus();
+  }
+
+  window.ravenAppendLog = appendLog;
+  window.ravenDebugRefresh = refreshStatus;
+  window.ravenDebugRenderLogs = renderLogStream;
+
+  document.addEventListener('DOMContentLoaded', initDebugConsole);
+})();
+
+
+========================================================================
 FILE: frontend/farm-calendar.js
 ========================================================================
 (function() {
-  const FC_ICONS = {
-    wheat:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#c8a84b"/><g stroke="#fff" stroke-width="1.4" fill="none"><path d="M18 28 L18 10"/><path d="M18 18 Q14 15 12 11" stroke-linecap="round"/><path d="M18 18 Q22 15 24 11" stroke-linecap="round"/><path d="M18 22 Q15 19 13 15" stroke-linecap="round"/><path d="M18 22 Q21 19 23 15" stroke-linecap="round"/><ellipse cx="18" cy="10" rx="2.5" ry="3.5" fill="#fff" opacity=".8" stroke="none"/></g></svg>`,
-    tractor:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#c0392b"/><g fill="#fff"><circle cx="13" cy="24" r="4"/><circle cx="13" cy="24" r="1.8" fill="#c0392b"/><circle cx="25" cy="25" r="2.5"/><circle cx="25" cy="25" r="1.1" fill="#c0392b"/><rect x="9" y="16" width="14" height="8" rx="2"/><rect x="20" y="13" width="7" height="7" rx="1.5"/></g></svg>`,
-    sunflower:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#e03f8e"/><circle cx="18" cy="18" r="4" fill="#f5c518"/><g fill="#f5c518" opacity=".85"><ellipse cx="18" cy="10" rx="2.2" ry="3.5"/><ellipse cx="18" cy="26" rx="2.2" ry="3.5"/><ellipse cx="10" cy="18" rx="3.5" ry="2.2"/><ellipse cx="26" cy="18" rx="3.5" ry="2.2"/></g></svg>`,
-    apple:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#27ae60"/><g fill="#fff"><ellipse cx="18" cy="19" rx="8" ry="9"/><path d="M18 10 Q20 7 23 8" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M18 10 L18 12" stroke="#4a7c20" stroke-width="1.5" stroke-linecap="round"/></g></svg>`,
-    sprout:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#2ecc71"/><g fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round"><path d="M18 28 L18 16"/><path d="M18 20 Q14 16 12 11 Q17 11 20 15"/><path d="M18 24 Q22 20 24 14 Q19 14 17 18"/></g></svg>`,
-    pitchfork:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#1a5e2a"/><g fill="#fff"><rect x="11" y="9" width="2" height="14" rx="1"/><rect x="17" y="9" width="2" height="14" rx="1"/><rect x="23" y="9" width="2" height="14" rx="1"/><path d="M10 15 Q18 20 26 15" fill="none" stroke="#fff" stroke-width="1.5"/><rect x="16" y="23" width="4" height="6" rx="1.5"/></g></svg>`,
-    barn:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#c0522a"/><g fill="#fff"><polygon points="18,8 28,16 28,28 8,28 8,16"/><rect x="14" y="20" width="8" height="8" fill="#c0522a"/></g></svg>`,
-    watercan:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#e67e22"/><g fill="#fff"><ellipse cx="16" cy="18" rx="7" ry="5"/><path d="M9 18 Q6 18 6 21 L9 26 L23 26 L23 21 Z"/></g></svg>`,
-    beehive:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#7d3c98"/><g fill="#f5c518"><ellipse cx="18" cy="20" rx="8" ry="9"/></g></svg>`,
-    corn:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#2980b9"/><g fill="#f5e642"><rect x="14" y="12" width="8" height="14" rx="4"/></g></svg>`,
-    trowel:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#0e8a6e"/><g fill="#fff"><path d="M22 10 Q28 10 28 16 Q28 22 22 22 L18 26 L16 28 L14 26 L18 22 Q12 22 12 16 Q12 10 18 10 Z"/></g></svg>`,
-    mushroom:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#e74c3c"/><g><ellipse cx="18" cy="17" rx="10" ry="7" fill="#c0392b"/><rect x="15" y="17" width="6" height="10" rx="3" fill="#f5deb3"/></g></svg>`,
-    cow:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#34495e"/><g fill="#fff"><ellipse cx="18" cy="19" rx="9" ry="7"/><ellipse cx="14" cy="10" rx="2.5" ry="3.5"/><ellipse cx="22" cy="10" rx="2.5" ry="3.5"/></g></svg>`,
-    shovel:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#16a085"/><g fill="#fff"><rect x="13.5" y="10" width="7" height="8" rx="2"/><rect x="15" y="18" width="4" height="8" rx="1"/></g></svg>`,
-    basket:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#1a3a5c"/><g fill="#f5c518"><path d="M10 22 Q10 28 18 28 Q26 28 26 22 L24 16 L12 16 Z"/></g><g fill="#e74c3c"><circle cx="15" cy="14" r="2.5"/><circle cx="21" cy="14" r="2.5"/><circle cx="18" cy="13" r="2.5"/></g></svg>`,
-    rooster:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#d35400"/><g fill="#fff"><path d="M18 10 Q22 8 22 12 Q22 15 18 16 Q14 15 14 12 Q14 8 18 10Z"/></g></svg>`,
-    ladybug:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#c0392b"/><g><circle cx="18" cy="20" r="9" fill="#e74c3c"/><path d="M9 20 L27 20" stroke="#2c1a1a" stroke-width="1"/><circle cx="14" cy="17" r="1.5" fill="#2c1a1a"/><circle cx="22" cy="17" r="1.5" fill="#2c1a1a"/></g></svg>`,
-    leaf:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#b8860b"/><g fill="#f5e642"><path d="M18 27 Q10 20 10 13 Q10 8 15 8 Q20 8 22 12 Q26 9 28 13 Q28 20 18 27Z"/></g></svg>`
+  const SC_ICONS = {
+    camera:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#1a3a5c"/><g fill="#fff"><rect x="8" y="12" width="20" height="14" rx="2"/><circle cx="18" cy="19" r="4" fill="#1a3a5c"/><path d="M22 12 L26 9 L26 12 Z"/></g></svg>`,
+    shield:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#2dbba0"/><g fill="#fff"><path d="M18 6 L28 10 L28 18 Q28 26 18 30 Q8 26 8 18 L8 10 Z"/></g></svg>`,
+    lock:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#4a9eff"/><g fill="#fff"><rect x="12" y="16" width="12" height="10" rx="2"/><path d="M14 16 L14 13 Q14 9 18 9 Q22 9 22 13 L22 16" fill="none" stroke="#fff" stroke-width="2"/></g></svg>`,
+    alert:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#e5392d"/><g fill="#fff"><path d="M18 8 L30 28 L6 28 Z"/><rect x="16.5" y="14" width="3" height="8" rx="1"/><circle cx="18" cy="24" r="1.5"/></g></svg>`,
+    radar:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#7d3c98"/><g fill="none" stroke="#fff" stroke-width="1.5"><circle cx="18" cy="18" r="8"/><circle cx="18" cy="18" r="4"/><line x1="18" y1="18" x2="24" y2="12"/></g></svg>`,
+    biometric:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#0e8a6e"/><g fill="none" stroke="#fff" stroke-width="1.4"><ellipse cx="18" cy="16" rx="6" ry="7"/><path d="M10 28 Q18 22 26 28"/></g></svg>`,
+    patrol:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#34495e"/><g fill="#fff"><circle cx="18" cy="12" r="4"/><path d="M10 28 L18 18 L26 28 Z"/></g></svg>`,
+    fence:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#c0522a"/><g fill="none" stroke="#fff" stroke-width="1.5"><line x1="10" y1="12" x2="10" y2="26"/><line x1="18" y1="10" x2="18" y2="26"/><line x1="26" y1="12" x2="26" y2="26"/><line x1="8" y1="16" x2="28" y2="16"/><line x1="8" y1="22" x2="28" y2="22"/></g></svg>`,
+    drone:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#2980b9"/><g fill="#fff"><circle cx="18" cy="18" r="3"/><circle cx="10" cy="10" r="2"/><circle cx="26" cy="10" r="2"/><circle cx="10" cy="26" r="2"/><circle cx="26" cy="26" r="2"/><line x1="12" y1="12" x2="16" y2="16" stroke="#fff" stroke-width="1.2"/><line x1="24" y1="12" x2="20" y2="16" stroke="#fff" stroke-width="1.2"/><line x1="12" y1="24" x2="16" y2="20" stroke="#fff" stroke-width="1.2"/><line x1="24" y1="24" x2="20" y2="20" stroke="#fff" stroke-width="1.2"/></g></svg>`,
+    access:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#16a085"/><g fill="#fff"><rect x="10" y="14" width="16" height="12" rx="1"/><rect x="14" y="18" width="4" height="4" fill="#16a085"/><line x1="22" y1="20" x2="24" y2="20" stroke="#16a085" stroke-width="2"/></g></svg>`,
+    incident:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#d35400"/><g fill="#fff"><rect x="10" y="8" width="16" height="20" rx="2"/><line x1="14" y1="13" x2="22" y2="13" stroke="#d35400" stroke-width="1.5"/><line x1="14" y1="17" x2="22" y2="17" stroke="#d35400" stroke-width="1.5"/><line x1="14" y1="21" x2="18" y2="21" stroke="#d35400" stroke-width="1.5"/></g></svg>`,
+    rf:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#e03f8e"/><g fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"><path d="M8 22 Q18 10 28 22"/><path d="M12 22 Q18 14 24 22"/><path d="M16 22 Q18 18 20 22"/></g></svg>`,
+    audit:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#b8860b"/><g fill="#fff"><path d="M12 8 L24 8 L24 28 L18 26 L12 28 Z"/><path d="M15 14 L21 14 M15 18 L21 18 M15 22 L18 22" stroke="#b8860b" stroke-width="1.5"/></g></svg>`,
+    cctv:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#1a5e2a"/><g fill="#fff"><rect x="6" y="14" width="14" height="10" rx="2"/><path d="M20 17 L28 14 L28 24 L20 21 Z"/><circle cx="13" cy="19" r="2" fill="#1a5e2a"/></g></svg>`,
+    perimeter:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#c0392b"/><g fill="none" stroke="#fff" stroke-width="1.5"><rect x="9" y="9" width="18" height="18" rx="2" stroke-dasharray="4 3"/><circle cx="18" cy="18" r="3" fill="#fff"/></g></svg>`,
+    threat:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#8e44ad"/><g fill="#fff"><circle cx="18" cy="18" r="8" fill="none" stroke="#fff" stroke-width="1.5"/><circle cx="18" cy="18" r="2"/><line x1="18" y1="6" x2="18" y2="10" stroke="#fff" stroke-width="1.5"/><line x1="18" y1="26" x2="18" y2="30" stroke="#fff" stroke-width="1.5"/><line x1="6" y1="18" x2="10" y2="18" stroke="#fff" stroke-width="1.5"/><line x1="26" y1="18" x2="30" y2="18" stroke="#fff" stroke-width="1.5"/></g></svg>`,
+    backup:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#27ae60"/><g fill="none" stroke="#fff" stroke-width="1.5"><ellipse cx="18" cy="20" rx="8" ry="5"/><path d="M10 20 L10 14 Q10 8 18 8 Q26 8 26 14 L26 20"/></g></svg>`,
+    report:`<svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="9" fill="#e67e22"/><g fill="#fff"><rect x="11" y="8" width="14" height="20" rx="2"/><rect x="14" y="14" width="8" height="2" fill="#e67e22"/><rect x="14" y="18" width="6" height="2" fill="#e67e22"/><rect x="14" y="22" width="8" height="2" fill="#e67e22"/></g></svg>`
   };
-  const FC_SUBS = [
-    {name:"Wheat Harvest",day:3,iconKey:"wheat",dot:"fc-dot-amber"},
-    {name:"Tractor Lease",day:12,iconKey:"tractor",dot:"fc-dot-red"},
-    {name:"Field Rotation",day:15,iconKey:"sunflower",dot:"fc-dot-red"},
-    {name:"Seed Supply",day:16,iconKey:"basket",dot:"fc-dot-teal"},
-    {name:"Barn Storage",day:20,iconKey:"barn",dot:"fc-dot-teal"},
-    {name:"Irrigation Run",day:25,iconKey:"watercan",dot:"fc-dot-teal"},
-    {name:"Hive Inspection",day:28,iconKey:"beehive",dot:"fc-dot-red"},
-    {name:"Harvest Log",day:5,iconKey:"leaf",dot:"fc-dot-amber"},
-    {name:"Apple Orchard",day:9,iconKey:"apple",dot:"fc-dot-teal"},
-    {name:"Tool Maintenance",day:11,iconKey:"pitchfork",dot:"fc-dot-teal"},
-    {name:"Crop Report",day:18,iconKey:"corn",dot:"fc-dot-blue"},
-    {name:"Livestock Check",day:22,iconKey:"cow",dot:"fc-dot-blue"},
-    {name:"Pest Control",day:7,iconKey:"ladybug",dot:"fc-dot-pink"},
-    {name:"Soil Aeration",day:14,iconKey:"shovel",dot:"fc-dot-teal"},
-    {name:"Corn Planting",day:2,iconKey:"sprout",dot:"fc-dot-blue"},
-    {name:"Foliage Spray",day:30,iconKey:"mushroom",dot:"fc-dot-amber"},
-    {name:"Carrot Harvest",day:1,iconKey:"trowel",dot:"fc-dot-teal"},
-    {name:"Rooster Round",day:10,iconKey:"rooster",dot:"fc-dot-amber"}
-  ];
-  const FC_MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
-  const now=new Date();
-  let fcYear=now.getFullYear(),fcMonth=now.getMonth(),fcSel=null;
 
-  function fcBuild(){
+  const SC_SUBS = [
+    {name:"Perimeter Scan",day:1,iconKey:"perimeter",dot:"sc-dot-teal",severity:"low",analysis:"Routine perimeter sweep completed. All 12 zones nominal. No breach signatures detected."},
+    {name:"CCTV Health Check",day:2,iconKey:"cctv",dot:"sc-dot-teal",severity:"low",analysis:"42 cameras online. 2 cameras flagged for lens cleaning at Gate C3 and Apron B."},
+    {name:"Threat Assessment",day:3,iconKey:"threat",dot:"sc-dot-amber",severity:"medium",analysis:"Elevated RF activity near north fence. Cross-referencing with biometric logs."},
+    {name:"Access Audit",day:5,iconKey:"access",dot:"sc-dot-teal",severity:"low",analysis:"147 access events reviewed. 3 after-hours entries flagged for HITL review."},
+    {name:"Drone Patrol",day:7,iconKey:"drone",dot:"sc-dot-blue",severity:"low",analysis:"Autonomous drone patrol covered 8.2km perimeter. Thermal anomalies: 0."},
+    {name:"RF Sweep",day:9,iconKey:"rf",dot:"sc-dot-pink",severity:"medium",analysis:"Wi-Fi probe requests spiked 340% near Terminal 2. Possible wardriving attempt."},
+    {name:"Biometric Sync",day:10,iconKey:"biometric",dot:"sc-dot-teal",severity:"low",analysis:"Embedding index refreshed. 1,204 profiles verified. Match latency: 18ms avg."},
+    {name:"Incident Review",day:11,iconKey:"incident",dot:"sc-dot-red",severity:"high",analysis:"3 open incidents require operator sign-off. Priority: Proximity alert EPWA C1."},
+    {name:"Fence Integrity",day:12,iconKey:"fence",dot:"sc-dot-amber",severity:"medium",analysis:"Vibration sensor triggered at sector 7-B. Physical inspection scheduled 06:00."},
+    {name:"Patrol Log",day:14,iconKey:"patrol",dot:"sc-dot-teal",severity:"low",analysis:"Night patrol completed 4 checkpoints. All guard posts confirmed active."},
+    {name:"Lock Rotation",day:15,iconKey:"lock",dot:"sc-dot-blue",severity:"low",analysis:"Credential rotation cycle initiated for 28 access points. ETA 2 hours."},
+    {name:"Radar Calibration",day:16,iconKey:"radar",dot:"sc-dot-teal",severity:"low",analysis:"RF spatial grid recalibrated. Detection radius extended to 450m."},
+    {name:"Alert Triage",day:18,iconKey:"alert",dot:"sc-dot-red",severity:"high",analysis:"12 alerts in queue. 2 CRITICAL (proximity), 4 HIGH (unidentified), 6 MEDIUM."},
+    {name:"Shield Update",day:20,iconKey:"shield",dot:"sc-dot-teal",severity:"low",analysis:"Firewall rules updated. 3 new IoT devices whitelisted after fingerprint scan."},
+    {name:"Camera Deploy",day:22,iconKey:"camera",dot:"sc-dot-blue",severity:"low",analysis:"New PTZ camera commissioned at Apron C. Stream latency: 42ms."},
+    {name:"Audit Chain Verify",day:25,iconKey:"audit",dot:"sc-dot-amber",severity:"medium",analysis:"Cryptographic audit chain verified. 4,892 records intact. Latest hash block valid."},
+    {name:"Backup Snapshot",day:28,iconKey:"backup",dot:"sc-dot-teal",severity:"low",analysis:"Full evidence package snapshot completed. 2.4TB archived to cold storage."},
+    {name:"Monthly Report",day:30,iconKey:"report",dot:"sc-dot-amber",severity:"low",analysis:"SOC monthly digest ready. 847 incidents processed, 99.2% auto-resolved."}
+  ];
+
+  const SC_MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const now=new Date();
+  let scYear=now.getFullYear(),scMonth=now.getMonth(),scSel=null;
+
+  function scBuild(){
     const grid=document.getElementById('fcCalGrid');
     if(!grid)return;
     grid.innerHTML='';
-    document.getElementById('fcNavMonth').textContent=FC_MONTHS[fcMonth]+' '+fcYear;
-    const firstDow=new Date(fcYear,fcMonth,1).getDay();
+    document.getElementById('fcNavMonth').textContent=SC_MONTHS[scMonth]+' '+scYear;
+    const firstDow=new Date(scYear,scMonth,1).getDay();
     const offset=firstDow===0?6:firstDow-1;
-    const dim=new Date(fcYear,fcMonth+1,0).getDate();
-    const prevDim=new Date(fcYear,fcMonth,0).getDate();
-    const isCurr=(fcYear===now.getFullYear()&&fcMonth===now.getMonth());
-    for(let i=0;i<offset;i++){grid.appendChild(fcMakeCell(prevDim-offset+1+i,'fc-other-month',[],false));}
+    const dim=new Date(scYear,scMonth+1,0).getDate();
+    const prevDim=new Date(scYear,scMonth,0).getDate();
+    const isCurr=(scYear===now.getFullYear()&&scMonth===now.getMonth());
+    for(let i=0;i<offset;i++){grid.appendChild(scMakeCell(prevDim-offset+1+i,'fc-other-month',[],false));}
     for(let d=1;d<=dim;d++){
       const isToday=isCurr&&d===now.getDate();
-      const isSel=fcSel&&fcSel.y===fcYear&&fcSel.m===fcMonth&&fcSel.d===d;
-      const subs=FC_SUBS.filter(s=>s.day===d);
+      const isSel=scSel&&scSel.y===scYear&&scSel.m===scMonth&&scSel.d===d;
+      const subs=SC_SUBS.filter(s=>s.day===d);
       let cls='';if(isToday)cls+=' fc-today';if(isSel)cls+=' fc-selected';
-      grid.appendChild(fcMakeCell(d,cls.trim(),subs,true));
+      grid.appendChild(scMakeCell(d,cls.trim(),subs,true));
     }
     const total=offset+dim,rem=total%7===0?0:7-(total%7);
-    for(let d=1;d<=rem;d++){grid.appendChild(fcMakeCell(d,'fc-other-month',[],false));}
-    fcBuildLegend();
+    for(let d=1;d<=rem;d++){grid.appendChild(scMakeCell(d,'fc-other-month',[],false));}
+    scBuildLegend();
   }
-  function fcMakeCell(dayNum,extraClass,subs,clickable){
+
+  function scMakeCell(dayNum,extraClass,subs,clickable){
     const el=document.createElement(clickable?'button':'div');
     el.className='fc-day-cell'+(extraClass?' '+extraClass:'');
     if(subs&&subs.length>0){
       const sub=subs[0];
       const iconWrap=document.createElement('div');iconWrap.className='fc-day-icon-wrap';
-      iconWrap.innerHTML=FC_ICONS[sub.iconKey]||'';el.appendChild(iconWrap);
+      iconWrap.innerHTML=SC_ICONS[sub.iconKey]||'';el.appendChild(iconWrap);
       const dot=document.createElement('div');dot.className='fc-day-dot '+sub.dot;el.appendChild(dot);
     }else{
       const spacer=document.createElement('div');spacer.className='fc-day-icon-spacer';el.appendChild(spacer);
     }
     const numEl=document.createElement('span');numEl.className='fc-day-num';numEl.textContent=dayNum;el.appendChild(numEl);
-    if(clickable){el.addEventListener('click',()=>fcOpenModal(dayNum,subs||[]));}
+    if(clickable){el.addEventListener('click',()=>scOpenModal(dayNum,subs||[]));}
     return el;
   }
-  function fcOpenModal(day,subs){
-    fcSel={y:fcYear,m:fcMonth,d:day};fcBuild();
-    document.getElementById('fcModalDate').textContent=FC_MONTHS[fcMonth].slice(0,3).toUpperCase()+' · '+fcYear;
+
+  function scSeverityColor(sev){
+    return {low:'#2dbba0',medium:'#f5a623',high:'#e5392d'}[sev]||'#888';
+  }
+
+  function scOpenModal(day,subs){
+    scSel={y:scYear,m:scMonth,d:day};scBuild();
+    document.getElementById('fcModalDate').textContent=SC_MONTHS[scMonth].slice(0,3).toUpperCase()+' · '+scYear;
     document.getElementById('fcModalDayNum').textContent=day;
     const c=document.getElementById('fcModalSubs');c.innerHTML='';
-    if(!subs.length){const e=document.createElement('div');e.className='fc-modal-empty';e.textContent='No farm tasks scheduled';c.appendChild(e);}
-    else{subs.forEach(s=>{const item=document.createElement('div');item.className='fc-modal-sub-item';item.innerHTML=`<div class="fc-modal-sub-icon">${FC_ICONS[s.iconKey]||''}</div><div class="fc-modal-sub-info"><div class="fc-modal-sub-name">${s.name}</div></div>`;c.appendChild(item);});}
+    if(!subs.length){
+      const e=document.createElement('div');e.className='fc-modal-empty';e.textContent='No security events scheduled';
+      c.appendChild(e);
+      const analysis=document.getElementById('fcModalAnalysis');
+      if(analysis){analysis.style.display='none';}
+    }else{
+      subs.forEach(s=>{
+        const item=document.createElement('div');item.className='fc-modal-sub-item';
+        item.innerHTML=`<div class="fc-modal-sub-icon">${SC_ICONS[s.iconKey]||''}</div><div class="fc-modal-sub-info"><div class="fc-modal-sub-name">${s.name}</div><div class="fc-modal-sub-desc" style="color:${scSeverityColor(s.severity)}">${s.severity.toUpperCase()} SEVERITY</div></div>`;
+        c.appendChild(item);
+      });
+      const analysis=document.getElementById('fcModalAnalysis');
+      if(analysis){
+        analysis.style.display='block';
+        analysis.innerHTML=`<div class="fc-analysis-label">Daily Analysis</div><div class="fc-analysis-text">${subs.map(s=>s.analysis).join(' ')}</div><div class="fc-analysis-metrics"><div class="fc-metric"><span class="fc-metric-val">${subs.length}</span><span class="fc-metric-lbl">Events</span></div><div class="fc-metric"><span class="fc-metric-val" style="color:${scSeverityColor(subs.reduce((a,s)=>s.severity==='high'?'high':s.severity==='medium'&&a!=='high'?'medium':a,'low'))}">${subs.filter(s=>s.severity==='high').length||subs.filter(s=>s.severity==='medium').length||0}</span><span class="fc-metric-lbl">Priority</span></div><div class="fc-metric"><span class="fc-metric-val">${Math.floor(Math.random()*40+60)}%</span><span class="fc-metric-lbl">Coverage</span></div></div>`;
+      }
+    }
     document.getElementById('fcModalOverlay').classList.add('open');
   }
-  function fcCloseModal(){document.getElementById('fcModalOverlay').classList.remove('open');}
-  function fcBuildLegend(){
+
+  function scCloseModal(){document.getElementById('fcModalOverlay').classList.remove('open');}
+
+  function scBuildLegend(){
     const bar=document.getElementById('fcLegendBar');if(!bar)return;bar.innerHTML='';
-    [{label:'Planting',cls:'fc-dot-teal'},{label:'Harvest',cls:'fc-dot-amber'},{label:'Livestock',cls:'fc-dot-blue'},{label:'Pest/Soil',cls:'fc-dot-pink'},{label:'Equipment',cls:'fc-dot-red'}].forEach(t=>{
+    [{label:'Surveillance',cls:'sc-dot-teal'},{label:'Alerts',cls:'sc-dot-amber'},{label:'Access Control',cls:'sc-dot-blue'},{label:'RF/Threat',cls:'sc-dot-pink'},{label:'Critical',cls:'sc-dot-red'}].forEach(t=>{
       const el=document.createElement('div');el.className='fc-legend-item';
       el.innerHTML=`<div class="fc-legend-dot ${t.cls}"></div><span>${t.label}</span>`;bar.appendChild(el);
     });
   }
 
   window.farmCalInit = function() {
-    document.getElementById('fcPrevBtn').addEventListener('click',()=>{fcMonth--;if(fcMonth<0){fcMonth=11;fcYear--;}fcSel=null;fcBuild();});
-    document.getElementById('fcNextBtn').addEventListener('click',()=>{fcMonth++;if(fcMonth>11){fcMonth=0;fcYear++;}fcSel=null;fcBuild();});
-    document.getElementById('fcTodayBtn').addEventListener('click',()=>{fcYear=now.getFullYear();fcMonth=now.getMonth();fcSel=null;fcBuild();});
-    document.getElementById('fcModalClose').addEventListener('click',fcCloseModal);
-    document.getElementById('fcModalOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('fcModalOverlay'))fcCloseModal();});
-    fcBuild();
+    document.getElementById('fcPrevBtn').addEventListener('click',()=>{scMonth--;if(scMonth<0){scMonth=11;scYear--;}scSel=null;scBuild();});
+    document.getElementById('fcNextBtn').addEventListener('click',()=>{scMonth++;if(scMonth>11){scMonth=0;scYear++;}scSel=null;scBuild();});
+    document.getElementById('fcTodayBtn').addEventListener('click',()=>{scYear=now.getFullYear();scMonth=now.getMonth();scSel=null;scBuild();});
+    document.getElementById('fcModalClose').addEventListener('click',scCloseModal);
+    document.getElementById('fcModalOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('fcModalOverlay'))scCloseModal();});
+    scBuild();
   };
 })();
 
@@ -16844,7 +17407,7 @@ FILE: frontend/index.html
   <!-- Leaflet.js for interactive airport map -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- Design System CSS -->
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="style.css">
 
   <!-- Inline SVG icon definitions (reusable symbols, no CDN needed) -->
   <svg style="display:none" xmlns="http://www.w3.org/2000/svg">
@@ -16889,7 +17452,11 @@ FILE: frontend/index.html
         <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
         <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
       </symbol>
-      <!-- Chevron down -->
+      <!-- Terminal / Debug -->
+      <symbol id="ico-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="4" width="20" height="16" rx="1"/>
+        <path d="M6 9l3 3-3 3M11 15h7"/>
+      </symbol>
       <symbol id="ico-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="6 9 12 15 18 9"/>
       </symbol>
@@ -16920,6 +17487,22 @@ FILE: frontend/index.html
       <!-- Expand / Maximize -->
       <symbol id="ico-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+      </symbol>
+      <!-- Compress / exit fullscreen -->
+      <symbol id="ico-compress" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M4 14h6v6M14 4h6v6M10 14L3 21M21 3l-7 7"/>
+      </symbol>
+      <!-- Sun (light mode) -->
+      <symbol id="ico-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <circle cx="12" cy="12" r="4"/>
+        <line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/>
+        <line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/>
+        <line x1="4.93" y1="4.93" x2="7.05" y2="7.05"/><line x1="16.95" y1="16.95" x2="19.07" y2="19.07"/>
+        <line x1="4.93" y1="19.07" x2="7.05" y2="16.95"/><line x1="16.95" y1="7.05" x2="19.07" y2="4.93"/>
+      </symbol>
+      <!-- Moon (dark mode) -->
+      <symbol id="ico-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
       </symbol>
       <!-- Diamond (hazardous) -->
       <symbol id="ico-diamond" viewBox="0 0 24 24" fill="currentColor">
@@ -17061,6 +17644,24 @@ FILE: frontend/index.html
       <symbol id="ico-danger" viewBox="0 0 24 24" fill="currentColor">
         <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
       </symbol>
+      <!-- Upload -->
+      <symbol id="ico-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </symbol>
+      <!-- Play -->
+      <symbol id="ico-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="5 3 19 12 5 21 5 3" fill="currentColor" stroke="none"/>
+      </symbol>
+      <!-- Chevron left -->
+      <symbol id="ico-chevron-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="15 18 9 12 15 6"/>
+      </symbol>
+      <!-- Chevron right -->
+      <symbol id="ico-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9 18 15 12 9 6"/>
+      </symbol>
       <!-- Walkie talkie -->
       <symbol id="ico-walkie" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
         <rect x="7" y="5" width="10" height="16" rx="2"/>
@@ -17076,12 +17677,12 @@ FILE: frontend/index.html
     <div class="sidebar-logo">CLOUDS</div>
     
     <nav class="nav-menu">
+      <div class="nav-item active" id="nav-btn-dashboard" data-tooltip="3D Cloud Dashboard">
+        <svg class="sidebar-icon"><use href="#ico-grid"/></svg>
+      </div>
       <div class="nav-item" id="nav-btn-camera" data-tooltip="Tactical Camera Grid">
         <svg class="sidebar-icon"><use href="#ico-camera"/></svg>
         <span id="nav-pending-count" class="nav-badge" style="display:none;">0</span>
-      </div>
-      <div class="nav-item active" id="nav-btn-dashboard" data-tooltip="3D Cloud Dashboard">
-        <svg class="sidebar-icon"><use href="#ico-grid"/></svg>
       </div>
       <div class="nav-item" id="nav-btn-ledger" data-tooltip="Incident Ledger &amp; Search">
         <svg class="sidebar-icon"><use href="#ico-ledger"/></svg>
@@ -17089,7 +17690,7 @@ FILE: frontend/index.html
       <div class="nav-item" id="nav-btn-rf" data-tooltip="RF Spatial Sensing">
         <svg class="sidebar-icon"><use href="#ico-rf"/></svg>
       </div>
-      <div class="nav-item" id="nav-btn-farm-calendar" data-tooltip="Farm Calendar">
+      <div class="nav-item" id="nav-btn-farm-calendar" data-tooltip="Security Calendar">
         <svg class="sidebar-icon"><use href="#ico-calendar"/></svg>
       </div>
       <div class="nav-item" id="nav-btn-farm-agent" data-tooltip="Voice Agent">
@@ -17097,6 +17698,9 @@ FILE: frontend/index.html
       </div>
       <div class="nav-item" id="nav-btn-farm-graph" data-tooltip="Knowledge Graph">
         <svg class="sidebar-icon"><use href="#ico-kgraph"/></svg>
+      </div>
+      <div class="nav-item" id="nav-btn-debug" data-tooltip="Debug Console">
+        <svg class="sidebar-icon"><use href="#ico-terminal"/></svg>
       </div>
     </nav>
 
@@ -17124,6 +17728,12 @@ FILE: frontend/index.html
     </div>
 
     <div class="header-right">
+      <!-- Theme Toggle -->
+      <button class="header-icon-btn theme-toggle-btn" id="btn-theme-toggle" title="Toggle light/dark mode">
+        <svg class="hdr-ico ico-sun"><use href="#ico-sun"/></svg>
+        <svg class="hdr-ico ico-moon"><use href="#ico-moon"/></svg>
+      </button>
+
       <!-- Verify Audit Trigger (Globe SVG) -->
       <button class="header-icon-btn" id="btn-verify-audit" title="Verify Audit Logs">
         <svg class="hdr-ico"><use href="#ico-globe"/></svg>
@@ -17180,6 +17790,13 @@ FILE: frontend/index.html
                   <button class="card-action-icon" title="Filters">
                     <svg class="toolbar-ico"><use href="#ico-bio"/></svg>
                   </button>
+                  <button class="card-action-icon" id="btn-cloud-upload" title="Upload CCTV video">
+                    <svg class="toolbar-ico"><use href="#ico-upload"/></svg>
+                  </button>
+                  <button class="card-action-icon" id="btn-cloud-play" title="Play loaded video">
+                    <svg class="toolbar-ico"><use href="#ico-play"/></svg>
+                  </button>
+                  <input type="file" id="cloud-video-input" accept="video/*" hidden>
                   <button class="card-action-icon" title="Maximize">
                     <svg class="toolbar-ico"><use href="#ico-expand"/></svg>
                   </button>
@@ -17224,18 +17841,21 @@ FILE: frontend/index.html
           <div class="dashboard-bottom-row">
             
             <!-- Airport Map Card -->
-            <div class="panel-card">
+            <div class="panel-card" id="airport-map-card">
               <div class="card-header">
                 <div class="card-title">Airport map</div>
                 <div class="card-actions">
-                  <button class="card-action-icon">
-                    <svg class="toolbar-ico"><use href="#ico-more"/></svg>
+                  <button class="card-action-icon" id="btn-map-fullscreen" title="Fullscreen map">
+                    <svg class="toolbar-ico"><use href="#ico-expand"/></svg>
                   </button>
                 </div>
               </div>
-              <div class="card-body" style="padding: 0; position: relative;">
+              <div class="card-body map-card-body" id="map-card-body" style="padding: 0; position: relative;">
+                <button class="map-fullscreen-btn" id="btn-map-fullscreen-overlay" title="Fullscreen map" onclick="document.getElementById('btn-map-fullscreen').click()">
+                  <svg><use href="#ico-expand"/></svg>
+                </button>
                 <div id="leaflet-map"></div>
-                <div class="map-fallback-container" id="map-offline-fallback" style="display:none; width:100%; height:100%; position:relative; background:#0b141a;">
+                <div class="map-fallback-container" id="map-offline-fallback" style="display:none; width:100%; height:100%; position:relative; background:#1a1a1a;">
                   <svg viewBox="0 0 400 180" style="width:100%; height:100%; display:block; opacity:0.85;">
                     <defs><pattern id="grid-pattern" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(255,255,255,0.015)" stroke-width="1"/></pattern></defs>
                     <rect width="100%" height="100%" fill="url(#grid-pattern)"/>
@@ -17265,63 +17885,15 @@ FILE: frontend/index.html
                   </button>
                 </div>
               </div>
-              <div class="card-body" style="padding: 0;">
-                <div class="activity-list" id="dashboard-activity-list">
-                  <!-- Fallback static items — replaced dynamically by app.js -->
-                  <div class="activity-item">
-                    <div class="activity-item-left">
-                      <span class="activity-icon-wrap hazardous">
-                        <svg class="act-ico" style="color:#f15b6c;"><use href="#ico-diamond"/></svg>
-                      </span>
-                      <span class="activity-text">Unauthorized Vehicle Access at <strong>CAM-03</strong></span>
-                    </div>
-                    <span class="activity-time">3 hours ago</span>
-                  </div>
-                  <div class="activity-item">
-                    <div class="activity-item-left">
-                      <span class="activity-icon-wrap interruption">
-                        <svg class="act-ico" style="color:#f1c40f;"><use href="#ico-warning"/></svg>
-                      </span>
-                      <span class="activity-text">Perimeter Fence Damage at <strong>CAM-04</strong></span>
-                    </div>
-                    <span class="activity-time">16/08/2025</span>
-                  </div>
-                  <div class="activity-item">
-                    <div class="activity-item-left">
-                      <span class="activity-icon-wrap info">
-                        <svg class="act-ico" style="color:#a29bfe;"><use href="#ico-circle"/></svg>
-                      </span>
-                      <span class="activity-text">Unauthorized Vehicle Access at <strong>CAM-02</strong></span>
-                    </div>
-                    <span class="activity-time">15/08/2025</span>
-                  </div>
-                  <div class="activity-item">
-                    <div class="activity-item-left">
-                      <span class="activity-icon-wrap interruption">
-                        <svg class="act-ico" style="color:#f1c40f;"><use href="#ico-warning"/></svg>
-                      </span>
-                      <span class="activity-text">Tailgating — Unauthorized Entry detected on <strong>CAM-01</strong></span>
-                    </div>
-                    <span class="activity-time">14/08/2025</span>
-                  </div>
-                  <div class="activity-item">
-                    <div class="activity-item-left">
-                      <span class="activity-icon-wrap info">
-                        <svg class="act-ico" style="color:#a29bfe;"><use href="#ico-circle"/></svg>
-                      </span>
-                      <span class="activity-text">Abandoned Object at <strong>CAM-02</strong></span>
-                    </div>
-                    <span class="activity-time">14/08/2025</span>
-                  </div>
-                  <div class="activity-item">
-                    <div class="activity-item-left">
-                      <span class="activity-icon-wrap hazardous">
-                        <svg class="act-ico" style="color:#f15b6c;"><use href="#ico-diamond"/></svg>
-                      </span>
-                      <span class="activity-text">Perimeter intrusion detected on <strong>CAM-01</strong></span>
-                    </div>
-                    <span class="activity-time">13/08/2025</span>
-                  </div>
+              <div class="card-body activity-card-body" style="padding: 0;">
+                <div class="activity-scroll-wrap">
+                  <button class="activity-scroll-btn" id="activity-scroll-prev" title="Previous" aria-label="Previous">
+                    <svg class="toolbar-ico"><use href="#ico-chevron-left"/></svg>
+                  </button>
+                  <div class="activity-list activity-list-horizontal" id="dashboard-activity-list"></div>
+                  <button class="activity-scroll-btn" id="activity-scroll-next" title="Next" aria-label="Next">
+                    <svg class="toolbar-ico"><use href="#ico-chevron-right"/></svg>
+                  </button>
                 </div>
               </div>
             </div>
@@ -17446,7 +18018,14 @@ FILE: frontend/index.html
             <svg style="width:18px;height:18px;color:var(--text-secondary);"><use href="#ico-tower"/></svg>
             <h2 style="font-size:1.1rem;font-weight:600;text-transform:uppercase;letter-spacing:1px;">Live Tactical Camera Grid</h2>
           </div>
-          <div style="display:flex;gap:10px;">
+          <div style="display:flex;gap:10px;align-items:center;">
+            <button class="hitl-btn" id="btn-grid-upload" title="Upload CCTV video" style="background:rgba(255,255,255,0.05);border:1px solid var(--border-color);color:var(--text-primary);padding:6px 12px;">
+              <svg style="width:13px;height:13px;display:inline;vertical-align:middle;margin-right:4px;"><use href="#ico-upload"/></svg> Upload Video
+            </button>
+            <button class="hitl-btn" id="btn-grid-play" title="Play loaded video" style="background:rgba(255,255,255,0.05);border:1px solid var(--border-color);color:var(--text-primary);padding:6px 12px;">
+              <svg style="width:13px;height:13px;display:inline;vertical-align:middle;margin-right:4px;"><use href="#ico-play"/></svg> Play Loaded
+            </button>
+            <input type="file" id="grid-video-input" accept="video/*" hidden>
             <button class="hitl-btn" id="btn-trigger-incident" style="background:rgba(241,91,108,0.1);border:1px solid rgba(241,91,108,0.3);color:var(--color-hazardous);padding:6px 12px;">
               <svg style="width:13px;height:13px;display:inline;vertical-align:middle;margin-right:4px;"><use href="#ico-danger"/></svg> Inject Random Threat
             </button>
@@ -17660,6 +18239,19 @@ FILE: frontend/index.html
           </div>
         </div>
 
+        <!-- Analysis Activity Cards (full-width, above heatmap) -->
+        <div class="panel-card ledger-activity-panel">
+          <div class="card-header">
+            <div class="card-title">
+              <svg style="width:14px;height:14px;color:var(--color-accent);"><use href="#ico-chip"/></svg>
+              Backend Analysis Results
+            </div>
+          </div>
+          <div class="card-body" style="padding:0;">
+            <div class="ledger-activity-list" id="ledger-activity-list"></div>
+          </div>
+        </div>
+
         <!-- Heatmap Card -->
         <div class="panel-card">
           <div class="card-header">
@@ -17814,62 +18406,99 @@ FILE: frontend/index.html
       </div>
     </section>
 
-    <!-- ── SECTION: FARM CALENDAR ─────────────────────────────────── -->
-    <section class="view-section" id="view-farm-calendar" style="background:#0a0a0a;padding:40px 20px;min-height:100vh;display:none;flex-direction:column;align-items:center;justify-content:flex-start;">
+    <!-- ── SECTION: DEBUG CONSOLE ───────────────────────────────────── -->
+    <section class="view-section" id="view-debug">
+      <div class="debug-console-container">
+        <div class="panel-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg style="width:14px;height:14px;"><use href="#ico-terminal"/></svg>
+              System Diagnostics
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button class="action-btn" id="debug-btn-refresh" type="button">Refresh</button>
+              <button class="action-btn" id="debug-btn-clear" type="button" style="background:var(--bg-input);">Clear Logs</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="debug-status-grid" class="debug-status-grid"></div>
+          </div>
+        </div>
+        <div class="panel-card debug-log-panel">
+          <div class="card-header">
+            <div class="card-title">Live Log Stream</div>
+          </div>
+          <div class="card-body" style="padding:0;">
+            <div id="debug-log-stream" class="debug-log-stream"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── SECTION: SECURITY CALENDAR ─────────────────────────────── -->
+    <section class="view-section theme-page" id="view-farm-calendar">
       <style>
+        @import url('https://fonts.googleapis.com/css2?family=Bitter:wght@800&display=swap');
         #view-farm-calendar.active{display:flex!important;}
         .fc-container{display:flex;flex-direction:column;align-items:center;gap:24px;width:100%;max-width:544px;}
-        .fc-nav-row{width:100%;display:flex;align-items:center;justify-content:center;position:relative;}
+        .fc-page-title{font-family:'Bitter',serif;font-weight:800;font-size:28px;color:var(--text-primary);margin-bottom:4px;letter-spacing:-.3px;}
+        .fc-page-sub{font-size:12px;color:var(--text-muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px;}
+        .fc-nav-btn{background:var(--bg-card);border:1px solid var(--border-color);border-radius:10px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s;flex-shrink:0;}
+        .fc-nav-btn:hover{background:var(--bg-input);}
+        .fc-nav-month{font-size:17px;font-weight:600;color:var(--text-primary);letter-spacing:.01em;min-width:190px;text-align:center;}
+        .fc-today-btn{background:var(--bg-card);border:1px solid var(--border-color);border-radius:10px;padding:7px 14px;color:var(--text-secondary);font-size:13px;font-family:inherit;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap;}
+        .fc-today-btn:hover{background:var(--bg-input);color:var(--text-primary);}
+        .fc-col-header{height:34px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:var(--text-muted);letter-spacing:.08em;text-transform:uppercase;}
+        .fc-day-cell{position:relative;aspect-ratio:1/1;min-width:0;background:var(--bg-card);border:1px solid var(--border-color);border-radius:14px;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:8px 6px 7px;cursor:pointer;transition:background .12s,transform .1s;outline:none;-webkit-tap-highlight-color:transparent;overflow:hidden;}
+        .fc-day-cell:hover{background:var(--bg-input);transform:scale(1.03);}
+        .fc-day-cell:active{transform:scale(.97);}
+        .fc-day-cell.fc-empty{background:transparent;border-color:transparent;cursor:default;pointer-events:none;}
+        .fc-day-cell.fc-today{background:var(--bg-input);}
+        .fc-day-cell.fc-today::after{content:'';position:absolute;inset:0;border-radius:14px;border:1.5px solid var(--color-accent);pointer-events:none;}
+        .fc-day-cell.fc-selected{background:var(--bg-input);}
+        .fc-day-cell.fc-selected::after{content:'';position:absolute;inset:0;border-radius:14px;border:1.5px solid var(--text-secondary);pointer-events:none;}
+        .fc-day-num{font-size:15px;font-weight:500;color:var(--text-secondary);line-height:1;text-align:center;flex-shrink:0;}
+        .fc-day-cell.fc-today .fc-day-num{font-weight:700;color:var(--text-primary);}
+        .fc-day-cell.fc-other-month{background:transparent;border-color:transparent;pointer-events:none;}
+        .fc-day-cell.fc-other-month .fc-day-num{color:var(--text-muted);opacity:.4;}
+        .fc-legend-item{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);}
+        .fc-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:500;align-items:center;justify-content:center;backdrop-filter:blur(6px);}
+        .fc-modal{background:var(--bg-card);border-radius:20px;border:1px solid var(--border-color);padding:24px;width:300px;max-width:90vw;position:relative;animation:fcPop .18s ease;}
+        .fc-modal-close{position:absolute;top:14px;right:14px;background:var(--bg-input);border:none;border-radius:50%;width:28px;height:28px;color:var(--text-muted);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .12s,color .12s;line-height:1;}
+        .fc-modal-close:hover{background:var(--border-color);color:var(--text-primary);}
+        .fc-modal-date{font-size:13px;color:var(--text-muted);margin-bottom:4px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;}
+        .fc-modal-day-num{font-size:36px;font-weight:700;color:var(--text-primary);line-height:1;margin-bottom:16px;}
+        .fc-modal-sub-item{display:flex;align-items:center;gap:12px;background:var(--bg-input);border-radius:12px;padding:10px 12px;}
+        .fc-modal-sub-name{font-size:14px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .fc-modal-sub-desc{font-size:12px;color:var(--text-muted);margin-top:1px;}
+        .fc-modal-empty{color:var(--text-muted);font-size:14px;text-align:center;padding:20px 0 4px;}
+        .fc-analysis-label{font-size:10px;color:var(--color-interruptions);letter-spacing:.8px;text-transform:uppercase;margin:16px 0 8px;font-weight:600;}
+        .fc-analysis-text{font-size:12px;color:var(--text-secondary);line-height:1.6;margin-bottom:14px;}
+        .fc-metric-val{font-size:18px;font-weight:700;color:var(--text-primary);display:block;}
+        .fc-metric-lbl{font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;}
+        .fc-nav-row{width:100%;display:flex;align-items:center;justify-content:center;}
         .fc-nav{display:flex;align-items:center;gap:16px;}
-        .fc-nav-btn{background:#1c1c1c;border:none;border-radius:10px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s;flex-shrink:0;}
-        .fc-nav-btn:hover{background:#2c2c2c;}
-        .fc-nav-month{font-size:17px;font-weight:600;color:#fff;letter-spacing:.01em;min-width:190px;text-align:center;}
-        .fc-today-btn{background:#1c1c1c;border:none;border-radius:10px;padding:7px 14px;color:#8a8a8a;font-size:13px;font-family:inherit;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap;}
-        .fc-today-btn:hover{background:#2c2c2c;color:#fff;}
         .fc-cal-wrap{width:100%;}
         .fc-cal-headers{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:5px;}
-        .fc-col-header{height:34px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#555;letter-spacing:.08em;text-transform:uppercase;}
         .fc-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;}
-        .fc-day-cell{position:relative;aspect-ratio:1/1;min-width:0;background:#1c1c1c;border-radius:14px;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:8px 6px 7px;border:none;cursor:pointer;transition:background .12s,transform .1s;outline:none;-webkit-tap-highlight-color:transparent;overflow:hidden;}
-        .fc-day-cell:hover{background:#272727;transform:scale(1.03);}
-        .fc-day-cell:active{transform:scale(.97);background:#303030;}
-        .fc-day-cell.fc-empty{background:transparent;cursor:default;pointer-events:none;}
-        .fc-day-cell.fc-today{background:#262626;}
-        .fc-day-cell.fc-today::after{content:'';position:absolute;inset:0;border-radius:14px;border:1.5px solid #444;pointer-events:none;}
-        .fc-day-cell.fc-selected{background:#2a2a2a;}
-        .fc-day-cell.fc-selected::after{content:'';position:absolute;inset:0;border-radius:14px;border:1.5px solid #666;pointer-events:none;}
         .fc-day-icon-wrap{width:36px;height:36px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:9px;overflow:hidden;}
-        .fc-day-icon-wrap svg{display:block;width:36px;height:36px;}
         .fc-day-icon-spacer{width:36px;height:36px;flex-shrink:0;}
-        .fc-day-num{font-size:15px;font-weight:500;color:#c8c8c8;line-height:1;text-align:center;flex-shrink:0;}
-        .fc-day-cell.fc-today .fc-day-num{font-weight:700;color:#fff;}
-        .fc-day-cell.fc-other-month{background:transparent;pointer-events:none;}
-        .fc-day-cell.fc-other-month .fc-day-num{color:#333;}
-        .fc-day-cell.fc-other-month .fc-day-icon-wrap{opacity:0;}
-        .fc-day-dot{position:absolute;top:6px;right:6px;width:6px;height:6px;border-radius:50%;flex-shrink:0;}
-        .fc-dot-red{background:#e5392d;}.fc-dot-teal{background:#2dbba0;}.fc-dot-pink{background:#e03f8e;}.fc-dot-blue{background:#4a9eff;}.fc-dot-amber{background:#f5a623;}
+        .fc-day-dot{position:absolute;top:6px;right:6px;width:6px;height:6px;border-radius:50%;}
+        .fc-dot-red,.sc-dot-red{background:#e5392d;}.fc-dot-teal,.sc-dot-teal{background:#2dbba0;}.fc-dot-pink,.sc-dot-pink{background:#e03f8e;}.fc-dot-blue,.sc-dot-blue{background:#4a9eff;}.fc-dot-amber,.sc-dot-amber{background:#f5a623;}
         .fc-legend-bar{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;}
-        .fc-legend-item{display:flex;align-items:center;gap:6px;font-size:12px;color:#555;}
         .fc-legend-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
-        .fc-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:500;align-items:center;justify-content:center;backdrop-filter:blur(6px);}
         .fc-modal-overlay.open{display:flex;}
-        .fc-modal{background:#1a1a1a;border-radius:20px;border:1px solid #2e2e2e;padding:24px;width:300px;max-width:90vw;position:relative;animation:fcPop .18s ease;}
-        @keyframes fcPop{from{transform:scale(.92);opacity:0}to{transform:scale(1);opacity:1}}
-        .fc-modal-close{position:absolute;top:14px;right:14px;background:#2a2a2a;border:none;border-radius:50%;width:28px;height:28px;color:#888;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .12s,color .12s;line-height:1;}
-        .fc-modal-close:hover{background:#333;color:#fff;}
-        .fc-modal-date{font-size:13px;color:#666;margin-bottom:4px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;}
-        .fc-modal-day-num{font-size:36px;font-weight:700;color:#fff;line-height:1;margin-bottom:16px;}
         .fc-modal-subs{display:flex;flex-direction:column;gap:10px;}
-        .fc-modal-sub-item{display:flex;align-items:center;gap:12px;background:#222;border-radius:12px;padding:10px 12px;}
         .fc-modal-sub-icon{width:36px;height:36px;border-radius:8px;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
-        .fc-modal-sub-icon svg{display:block;width:36px;height:36px;}
         .fc-modal-sub-info{flex:1;min-width:0;}
-        .fc-modal-sub-name{font-size:14px;font-weight:600;color:#e0e0e0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-        .fc-modal-sub-desc{font-size:12px;color:#666;margin-top:1px;}
-        .fc-modal-empty{color:#444;font-size:14px;text-align:center;padding:20px 0 4px;}
+        .fc-analysis-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;border-top:1px dotted var(--border-color);padding-top:14px;}
+        .fc-metric{text-align:center;}
+        @keyframes fcPop{from{transform:scale(.92);opacity:0}to{transform:scale(1);opacity:1}}
       </style>
 
       <div class="fc-container">
+        <div class="fc-page-title">Security Calendar</div>
+        <div class="fc-page-sub">Daily SOC analysis &amp; event overlays</div>
         <div class="fc-nav-row">
           <div class="fc-nav">
             <button class="fc-nav-btn" id="fcPrevBtn" aria-label="Previous month">
@@ -17901,106 +18530,176 @@ FILE: frontend/index.html
           <div class="fc-modal-date" id="fcModalDate"></div>
           <div class="fc-modal-day-num" id="fcModalDayNum"></div>
           <div class="fc-modal-subs" id="fcModalSubs"></div>
+          <div id="fcModalAnalysis" style="display:none;"></div>
         </div>
       </div>
     </section>
 
     <!-- ── SECTION: VOICE AGENT ───────────────────────────────────── -->
-    <section class="view-section" id="view-farm-agent" style="display:none;background:#0a0a0a;min-height:100vh;align-items:center;justify-content:center;">
-      <style>#view-farm-agent.active{display:flex!important;}</style>
-      <div class="agent-panel" style="position:relative;animation:none;">
-        <div class="agent-header">
-          <div class="orb-wrap" id="orb2">
-            <svg class="orb-icon" viewBox="0 0 24 24" fill="none">
-              <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z" fill="#fff"/>
-              <path d="M17 11a5 5 0 0 1-10 0" stroke="#fff" stroke-width="1.6" stroke-linecap="round" fill="none"/>
-              <path d="M12 16v3" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>
-            </svg>
-          </div>
-          <div class="agent-name">Voice Assistant</div>
-          <div class="status" id="st2">Tap orb or press Start call</div>
+    <section class="view-section theme-page" id="view-farm-agent">
+      <style>
+        #view-farm-agent.active{display:flex!important;}
+        #view-farm-agent{flex-direction:column;align-items:center;justify-content:center;position:relative;overflow:hidden;background:var(--bg-main);}
+        .va-canvas-wrap{position:absolute;inset:0;width:100%;height:100%;}
+        #vaCanvas{display:block;width:100%;height:100%;}
+        .va-ui-layer{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;width:100%;height:100%;padding:0 0 48px;pointer-events:none;}
+        .va-ui-layer>*{pointer-events:auto;}
+        .va-top-bar{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:center;padding:20px 28px;background:linear-gradient(to bottom,var(--bg-main),transparent);pointer-events:none;}
+        .va-top-bar>*{pointer-events:auto;}
+        .va-title{font-family:'Bitter',serif;font-weight:800;font-size:22px;color:var(--text-primary);letter-spacing:-.3px;}
+        .va-subtitle{font-size:11px;color:var(--text-muted);letter-spacing:.08em;text-transform:uppercase;margin-top:2px;}
+        .va-controls-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:center;}
+        .va-orb{width:88px;height:88px;border-radius:50%;background:transparent;border:2px solid rgba(0,255,255,.25);display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative;transition:transform .15s,box-shadow .3s;margin-bottom:16px;box-shadow:0 0 40px rgba(0,255,255,.15),0 0 80px rgba(255,0,255,.08);}
+        .va-orb:hover{transform:scale(1.05);}
+        .va-orb.active{animation:vaOrbPulse 1.8s ease-in-out infinite;border-color:rgba(0,255,255,.6);box-shadow:0 0 60px rgba(0,255,255,.35),0 0 100px rgba(255,0,255,.2);}
+        @keyframes vaOrbPulse{0%,100%{box-shadow:0 0 40px rgba(0,255,255,.2),0 0 80px rgba(255,0,255,.1)}50%{box-shadow:0 0 70px rgba(0,255,255,.45),0 0 120px rgba(255,0,255,.25)}}
+        .va-orb svg{position:relative;z-index:1;width:32px;height:32px;color:#00ffff;}
+        .va-btn{display:flex;align-items:center;gap:6px;background:var(--bg-card);backdrop-filter:blur(12px);border:1px solid var(--border-color);border-radius:14px;padding:11px 18px;color:var(--text-primary);font-size:13px;font-family:inherit;font-weight:500;cursor:pointer;transition:background .12s,border-color .12s;white-space:nowrap;}
+        .va-btn:hover{background:var(--bg-input);border-color:var(--border-hover);}
+        .va-btn:disabled{opacity:.5;cursor:default;}
+        .va-btn.call{background:rgba(31,94,60,.85);border-color:rgba(46,213,115,.3);color:#cdf5dd;}
+        .va-btn.end{background:rgba(94,31,31,.85);border-color:rgba(241,91,108,.3);color:#ffd9d9;}
+        .va-btn.mute.on{background:rgba(94,74,31,.85);color:#ffe9c2;}
+        .va-btn.chat.on{background:rgba(31,58,94,.85);color:#cfe4ff;}
+        .va-status{font-size:12px;color:var(--text-secondary);text-align:center;margin-bottom:12px;min-height:18px;}
+        .va-status.err{color:var(--color-hazardous);}
+        .va-chat{position:absolute;right:24px;bottom:120px;width:320px;max-height:400px;background:var(--bg-card);backdrop-filter:blur(16px);border:1px solid var(--border-color);border-radius:18px;display:none;flex-direction:column;overflow:hidden;z-index:20;}
+        .va-chat.open{display:flex;}
+        .va-chat-hdr{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--border-color);font-size:12px;color:var(--text-muted);}
+        .va-chat-dot{width:8px;height:8px;border-radius:50%;background:var(--text-muted);}
+        .va-chat-msgs{flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:8px;max-height:280px;}
+        .va-chat-msgs .msg{padding:8px 12px;border-radius:12px;font-size:13px;line-height:1.4;max-width:85%;}
+        .va-chat-msgs .msg.u{background:rgba(37,99,235,.15);color:var(--text-primary);align-self:flex-end;}
+        .va-chat-msgs .msg.a{background:var(--bg-input);color:var(--text-primary);align-self:flex-start;}
+        .va-chat-msgs .msg.sys{background:transparent;color:var(--text-muted);font-size:11px;align-self:center;}
+        .va-chat-input{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--border-color);}
+        .va-chat-input input{flex:1;background:var(--bg-input);border:1px solid var(--border-color);border-radius:10px;padding:8px 12px;color:var(--text-primary);font-size:13px;outline:none;}
+        .va-chat-input button{background:var(--color-accent);border:none;border-radius:10px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+      </style>
+
+      <div class="va-canvas-wrap"><canvas id="vaCanvas"></canvas></div>
+
+      <div class="va-top-bar">
+        <div>
+          <div class="va-title">Voice Assistant</div>
+          <div class="va-subtitle">Raven SOC Agent</div>
         </div>
-        <div class="agent-controls">
-          <button class="ctrl-btn call" id="bCall2">
+      </div>
+
+      <div class="va-ui-layer">
+        <div class="va-orb" id="orb2">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z" fill="#00ffff"/>
+            <path d="M17 11a5 5 0 0 1-10 0" stroke="#00ffff" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+            <path d="M12 16v3" stroke="#00ffff" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="va-status" id="st2">Tap orb or press Start call</div>
+        <div class="va-controls-row">
+          <button class="va-btn call" id="bCall2">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6.6 10.8a15.4 15.4 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11.4 11.4 0 0 0 .57 3.6 1 1 0 0 1-.25 1z" fill="#cdf5dd"/></svg>
             Start call
           </button>
-          <button class="ctrl-btn mute" id="bMute2" style="display:none;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" id="micIco2"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.93V20H9v2h6v-2h-2v-2.07A7 7 0 0 0 19 11h-2z" fill="#ddd"/></svg>
+          <button class="va-btn mute" id="bMute2" style="display:none;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.93V20H9v2h6v-2h-2v-2.07A7 7 0 0 0 19 11h-2z" fill="#ddd"/></svg>
             <span id="muteLabel2">Mute</span>
           </button>
-          <button class="ctrl-btn end" id="bEnd2" style="display:none;">
+          <button class="va-btn end" id="bEnd2" style="display:none;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 9c-2.5 0-4.9.4-7.1 1.2a1 1 0 0 0-.6 1.1l.6 2.9a1 1 0 0 0 1.1.8c1-.13 2-.2 3-.2l.5-2a1 1 0 0 1 .8-.7 9 9 0 0 1 3.4 0 1 1 0 0 1 .8.7l.5 2c1 0 2 .07 3 .2a1 1 0 0 0 1.1-.8l.6-2.9a1 1 0 0 0-.6-1.1A19 19 0 0 0 12 9z" fill="#ffd9d9"/></svg>
             End
           </button>
-          <button class="ctrl-btn chat" id="bChat2">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 4h16v12H7l-3 3V4z" stroke="#ddd" stroke-width="1.6" fill="none" stroke-linejoin="round"/></svg>
+          <button class="va-btn chat" id="bChat2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 4h16v12H7l-3 3V4z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/></svg>
             Chat
           </button>
         </div>
-        <div class="agent-divider"></div>
-        <div class="chat-overlay" id="chatOverlay2">
-          <div class="chat-header"><div class="chat-dot" id="cDot2"></div><span>Text chat with the agent</span></div>
-          <div class="chat-msgs" id="cMsgs2"></div>
-          <div class="chat-input-row">
-            <input class="chat-input" id="cIn2" type="text" placeholder="Type a message…" autocomplete="off"/>
-            <button class="chat-send" id="cSend2" aria-label="Send">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 11l18-8-8 18-2-8-8-2z" fill="#fff"/></svg>
-            </button>
-          </div>
+      </div>
+
+      <div class="va-chat" id="chatOverlay2">
+        <div class="va-chat-hdr"><div class="va-chat-dot" id="cDot2"></div><span>Text chat with the agent</span></div>
+        <div class="va-chat-msgs" id="cMsgs2"></div>
+        <div class="va-chat-input">
+          <input id="cIn2" type="text" placeholder="Type a message…" autocomplete="off"/>
+          <button id="cSend2" aria-label="Send">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 11l18-8-8 18-2-8-8-2z" fill="#fff"/></svg>
+          </button>
         </div>
       </div>
     </section>
 
     <!-- ── SECTION: KNOWLEDGE GRAPH ──────────────────────────────── -->
-    <section class="view-section" id="view-farm-graph" style="display:none;background:#474749;color:#f3f1ec;min-height:100vh;overflow-y:auto;font-family:'Oswald',sans-serif;">
+    <section class="view-section theme-page" id="view-farm-graph">
       <style>
         #view-farm-graph.active{display:block!important;}
         @import url('https://fonts.googleapis.com/css2?family=Bitter:wght@400;700;800;900&family=Oswald:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-        .kgraph-header{padding:44px 50px 18px;}
-        .kgraph-bar{width:230px;height:30px;background:#fcaf45;margin-bottom:18px;}
-        .kgraph-title{font-family:'Bitter',serif;font-weight:800;font-size:58px;line-height:1.02;color:#f3f1ec;margin:0 0 16px;letter-spacing:-.5px;}
-        .kgraph-deck{font-size:13.5px;line-height:1.65;color:#cfcdc8;max-width:430px;font-weight:400;letter-spacing:.1px;font-family:'Oswald',sans-serif;}
+        #view-farm-graph{background:var(--bg-main);color:var(--text-primary);overflow-y:auto;font-family:'Oswald',sans-serif;}
+        .kgraph-header{padding:44px 50px 18px;position:relative;}
+        .kgraph-bar{width:230px;height:30px;background:#FDB913;margin-bottom:18px;}
+        .kgraph-title{font-family:'Bitter',serif;font-weight:900;font-size:58px;line-height:1.02;color:var(--text-primary);margin:0 0 16px;letter-spacing:-.5px;}
+        .kgraph-deck{font-size:13.5px;line-height:1.65;color:var(--text-secondary);max-width:430px;font-weight:400;letter-spacing:.1px;font-family:'Oswald',sans-serif;}
+        .kgt-btn{background:var(--bg-card);border:1px solid var(--border-color);border-radius:10px;padding:8px 14px;color:var(--text-primary);font-size:12px;font-family:'JetBrains Mono',monospace;letter-spacing:.3px;cursor:pointer;transition:background .15s,border-color .15s,color .15s;white-space:nowrap;}
+        .kgt-btn:hover{background:var(--bg-input);border-color:var(--border-hover);color:var(--text-primary);}
+        .kgt-btn.active{background:#FDB913;border-color:#FDB913;color:#1a1a1a;font-weight:600;}
+        .kgt-sep{width:1px;height:28px;background:var(--border-color);flex-shrink:0;}
+        .kgt-label{font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace;letter-spacing:.4px;}
+        .kgt-range{-webkit-appearance:none;appearance:none;width:120px;height:4px;background:var(--bg-input);border-radius:2px;outline:none;cursor:pointer;}
+        .kgraph-hud{background:var(--bg-card);border:1px solid var(--border-color);border-radius:14px;padding:10px 20px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted);letter-spacing:.3px;pointer-events:none;white-space:nowrap;transition:opacity .3s;opacity:1;margin:0 auto;text-align:center;width:fit-content;margin-top:12px;}
+        .kgraph-info-panel{position:fixed;right:0;top:0;bottom:0;width:0;background:var(--bg-card);border-left:1px solid var(--border-color);z-index:450;overflow:hidden;transition:width .3s ease;display:flex;flex-direction:column;font-family:'JetBrains Mono',monospace;}
+        #kg-tooltip{background:var(--bg-card);border:1px solid var(--border-color);color:var(--text-primary);}
+        .kg-stat-section{border-top:2px dotted #9c8350;padding-top:8px;}
+        .kg-stat-num{color:var(--text-primary);}
+        .kg-stat-label{color:var(--text-primary);}
+        .kg-stat-copy{color:var(--text-secondary);}
+        .kg-legend{background:var(--bg-card);border:1px solid var(--border-color);}
+        .kg-map-inset{background:var(--bg-card);border:1px solid var(--border-color);}
+        .kg-fan-line{fill:none;stroke-width:.55;opacity:.55;filter:url(#kg-line-glow);}
+        .kg-fan-line.glow-active{animation:kgLineGlow 2.4s ease-in-out infinite alternate;}
+        @keyframes kgLineGlow{0%{opacity:.35;stroke-width:.45}100%{opacity:.85;stroke-width:.75}}
+        .kg-circ-label{font-family:'JetBrains Mono',monospace;font-size:4.2px;fill:var(--text-muted);letter-spacing:.2px;}
+        .kg-outer-ring{fill:none;stroke:var(--border-color);stroke-width:.6;opacity:.35;}
         .kgraph-toolbar{display:flex;align-items:center;gap:12px;padding:0 50px 16px;flex-wrap:wrap;}
-        .kgt-btn{background:#3a3a3c;border:1px solid #525254;border-radius:10px;padding:8px 14px;color:#e3e1db;font-size:12px;font-family:'JetBrains Mono',monospace;letter-spacing:.3px;cursor:pointer;transition:background .15s,border-color .15s,color .15s;white-space:nowrap;}
-        .kgt-btn:hover{background:#4a4a4c;border-color:#888;color:#fff;}
-        .kgt-btn.active{background:#fcaf45;border-color:#fcaf45;color:#1a1a1a;font-weight:600;}
-        .kgt-sep{width:1px;height:28px;background:#525254;flex-shrink:0;}
-        .kgt-label{font-size:11px;color:#888;font-family:'JetBrains Mono',monospace;letter-spacing:.4px;}
-        .kgt-range{-webkit-appearance:none;appearance:none;width:120px;height:4px;background:#3a3a3c;border-radius:2px;outline:none;cursor:pointer;}
-        .kgt-range::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#fcaf45;cursor:pointer;}
+        .kgt-range::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#FDB913;cursor:pointer;}
         .kgraph-zone{position:relative;width:100%;display:flex;justify-content:center;margin-top:-10px;cursor:crosshair;user-select:none;}
         .kgraph-svg{width:100%;max-width:900px;height:auto;overflow:visible;}
-        .kgraph-hud{background:#141414;border:1px solid #2a2a2a;border-radius:14px;padding:10px 20px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#666;letter-spacing:.3px;pointer-events:none;white-space:nowrap;transition:opacity .3s;opacity:1;margin:0 auto;text-align:center;width:fit-content;margin-top:12px;}
-        .kgraph-hud span{color:#fcaf45;}
-        .kgraph-info-panel{position:fixed;right:0;top:0;bottom:0;width:0;background:#141414;border-left:1px solid #2a2a2a;z-index:450;overflow:hidden;transition:width .3s ease;display:flex;flex-direction:column;font-family:'JetBrains Mono',monospace;}
+        .kgraph-hud span{color:#FDB913;}
         .kgraph-info-panel.open{width:280px;}
         .kgraph-panel-inner{padding:24px 20px;overflow-y:auto;flex:1;}
-        #kg-tooltip{position:fixed;z-index:600;background:#141414;border:1px solid #3a3a3c;border-radius:10px;padding:10px 14px;pointer-events:none;opacity:0;transition:opacity .15s;font-family:'JetBrains Mono',monospace;font-size:11px;color:#e3e1db;box-shadow:0 6px 28px rgba(0,0,0,.6);max-width:200px;}
+        #kg-tooltip{position:fixed;z-index:600;border-radius:10px;padding:10px 14px;pointer-events:none;opacity:0;transition:opacity .15s;font-family:'JetBrains Mono',monospace;font-size:11px;box-shadow:var(--shadow-lg);max-width:200px;}
         #kg-tooltip.show{opacity:1;}
         #kg-tooltip .tt-title{font-weight:600;font-size:12px;margin-bottom:4px;}
-        #kg-tooltip .tt-sub{color:#888;font-size:10px;}
+        #kg-tooltip .tt-sub{color:var(--text-muted);font-size:10px;}
         #kg-tooltip .tt-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle;}
-        .kg-sel-badge{position:fixed;top:24px;right:24px;z-index:500;background:#fcaf45;border-radius:10px;padding:6px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#1a1a1a;font-weight:700;letter-spacing:.3px;display:none;}
+        .kg-sel-badge{position:fixed;top:24px;right:24px;z-index:500;background:#FDB913;border-radius:10px;padding:6px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#1a1a1a;font-weight:700;letter-spacing:.3px;display:none;}
         .kg-sel-badge.show{display:block;}
         .kgraph-stats{margin-top:38px;padding:0 50px 60px;display:grid;grid-template-columns:1.55fr 1.7fr 1.45fr;gap:0;}
-        .kg-stat-section{border-top:2px dotted #9c8350;padding-top:8px;}
-        .kg-stat-section+.kg-stat-section{margin-left:26px;padding-left:26px;border-left:1px solid rgba(255,255,255,.08);}
+        .kg-stat-section+.kg-stat-section{margin-left:26px;padding-left:26px;border-left:1px solid var(--border-color);}
         .kg-stat-section h4{font-family:'Bitter',serif;font-weight:800;font-size:17px;color:#c9a24a;margin:0 0 16px;}
-        .kg-stat-num{font-family:'Bitter',serif;font-weight:800;font-size:34px;line-height:1;color:#f3f1ec;display:block;margin-bottom:2px;}
-        .kg-stat-label{font-family:'Oswald',sans-serif;font-weight:600;font-size:11.5px;text-transform:uppercase;color:#e3e1db;letter-spacing:.2px;margin-bottom:6px;display:block;}
-        .kg-stat-copy{font-size:9.6px;line-height:1.55;color:#a8a6a1;font-family:'Oswald',sans-serif;font-weight:300;}
+        .kg-stat-num{font-family:'Bitter',serif;font-weight:800;font-size:34px;line-height:1;display:block;margin-bottom:2px;}
+        .kg-stat-label{font-family:'Oswald',sans-serif;font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.2px;margin-bottom:6px;display:block;}
+        .kg-stat-copy{font-size:9.6px;line-height:1.55;font-family:'Oswald',sans-serif;font-weight:300;}
         .kg-stat-cols{display:grid;gap:18px 16px;}
         .kg-cols-2{grid-template-columns:1fr 1fr;}
         .kg-cols-3{grid-template-columns:1fr .9fr .9fr;}
         .kg-cols-4{grid-template-columns:.85fr .7fr;}
         .kg-stat-block{padding-bottom:6px;}
+        .kg-legend{position:absolute;bottom:60px;right:50px;border-radius:12px;padding:16px 18px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);z-index:10;}
+        .kg-legend h5{font-family:'Bitter',serif;font-weight:800;font-size:12px;color:#c9a24a;margin:0 0 10px;text-transform:uppercase;letter-spacing:.5px;}
+        .kg-legend-item{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+        .kg-legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+        .kg-map-inset{position:absolute;bottom:60px;left:50px;width:90px;height:90px;border-radius:50%;overflow:hidden;z-index:10;}
+        .kg-map-inset svg{width:100%;height:100%;}
+        .kg-ingest-status{font-size:10px;color:var(--text-muted);margin-left:8px;font-family:'JetBrains Mono',monospace;}
+        @keyframes ambientGlow{0%{opacity:.3}100%{opacity:.6}}
+        @keyframes glowPulse{0%{opacity:.6}100%{opacity:1}}
+        @keyframes rippleOut{0%{r:0;opacity:.8}100%{r:30;opacity:0}}
+        @keyframes nodeGlow{0%,100%{opacity:.7}50%{opacity:1}}
+        @keyframes pipelineFlow{0%{stroke-dashoffset:0}100%{stroke-dashoffset:-32}}
       </style>
 
       <div class="kgraph-header">
         <div class="kgraph-bar"></div>
-        <h1 class="kgraph-title">Mapping<br>the graph</h1>
-        <p class="kgraph-deck">Click nodes, dots, or spokes to illuminate data pathways. Hold Shift to multi-select. Use the toolbar to filter by domain or trigger wave animations across the network.</p>
+        <h1 class="kgraph-title">Mapping<br>the data</h1>
+        <p class="kgraph-deck">The journey of security intelligence from sensor ingestion to the Raven Data Centre. Click nodes to illuminate data pathways. Hold Shift to multi-select.</p>
       </div>
 
       <div class="kgraph-toolbar">
@@ -18010,6 +18709,10 @@ FILE: frontend/index.html
         <button class="kgt-btn" data-kgdomain="atlas" style="color:#81c675;">SCHEMA</button>
         <button class="kgt-btn" data-kgdomain="lhcb" style="color:#fcaf45;">SIGNAL</button>
         <button class="kgt-btn" data-kgdomain="alice" style="color:#14aae1;">STREAM</button>
+        <div class="kgt-sep"></div>
+        <span class="kgt-label">INGEST</span>
+        <button class="kgt-btn" id="kg-btn-ingest" style="color:#81c675;">SYNC n8n</button>
+        <span class="kg-ingest-status" id="kgIngestStatus">Ready</span>
         <div class="kgt-sep"></div>
         <span class="kgt-label">ANIMATE</span>
         <button class="kgt-btn" id="kg-btn-wave">WAVE PULSE</button>
@@ -18058,93 +18761,98 @@ FILE: frontend/index.html
             <line x1="-300" y1="3" x2="-46" y2="3" stroke="#d9dbda" stroke-width="1.2" opacity=".3" stroke-dasharray="6 10" style="animation:pipelineFlow 2.5s linear infinite;animation-delay:.8s"/>
             <line x1="-300" y1="9" x2="-46" y2="9" stroke="#14aae1" stroke-width="1.2" opacity=".4" stroke-dasharray="6 10" style="animation:pipelineFlow 2.5s linear infinite;animation-delay:1.2s"/>
           </g>
-          <g class="kg-link-layer" id="kgLinkLayer">
-            <line x1="-21.60" y1="-40.62" x2="-45.07" y2="-84.76" stroke="#81c675" stroke-width="1.1" opacity=".95" data-hub="h0"/>
-            <line x1="-6.40" y1="-45.55" x2="-13.36" y2="-95.07" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h1"/>
-            <line x1="9.56" y1="-44.99" x2="19.96" y2="-93.90" stroke="#81c675" stroke-width="1.1" opacity=".95" data-hub="h2"/>
-            <line x1="24.38" y1="-39.01" x2="50.87" y2="-81.41" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h3"/>
-            <line x1="34.18" y1="-30.78" x2="71.34" y2="-64.24" stroke="#1e968a" stroke-width="1.1" opacity=".95" data-hub="h4"/>
-            <line x1="40.62" y1="-21.60" x2="84.76" y2="-45.07" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h5"/>
-            <line x1="44.43" y1="-11.91" x2="92.73" y2="-24.85" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h6"/>
-            <line x1="45.89" y1="-3.21" x2="53.63" y2="-3.75" stroke="#81c675" stroke-width="1.1" opacity=".95" data-hub="h7"/>
-            <line x1="45.55" y1="6.40" x2="77.95" y2="10.96" stroke="#fcaf45" stroke-width="1.1" opacity=".95" data-hub="h8"/>
-            <line x1="43.23" y1="15.73" x2="90.21" y2="32.83" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h9"/>
-            <line x1="38.14" y1="25.72" x2="79.59" y2="53.68" stroke="#1e968a" stroke-width="1.1" opacity=".95" data-hub="h10"/>
-            <line x1="30.78" y1="34.18" x2="64.24" y2="71.34" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h11"/>
-            <line x1="20.17" y1="41.34" x2="42.08" y2="86.28" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h12"/>
-            <line x1="6.40" y1="45.55" x2="13.36" y2="95.07" stroke="#81c675" stroke-width="1.1" opacity=".95" data-hub="h13"/>
-            <line x1="-9.56" y1="44.99" x2="-19.96" y2="93.90" stroke="#1e968a" stroke-width="1.1" opacity=".95" data-hub="h14"/>
-            <line x1="-24.38" y1="39.01" x2="-50.87" y2="81.41" stroke="#c9cac9" stroke-width="1.1" opacity=".95" data-hub="h15"/>
-          </g>
+          <g class="kg-link-layer" id="kgLinkLayer"></g>
+          <g class="kg-fan-layer" id="kgFanLayer"></g>
+          <g class="kg-label-layer" id="kgLabelLayer"></g>
           <g class="kg-node-layer" id="kgNodeLayer">
-            <circle cx="-45.07" cy="-84.76" r="7.2" fill="#474749" stroke="#81c675" stroke-width="2.4" data-hub="h0" data-domain="atlas" data-name="EU-WEST CLUSTER" style="cursor:pointer;"/>
+            <circle cx="-45.07" cy="-84.76" r="7.2" fill="#1a1a1a" stroke="#81c675" stroke-width="2.4" data-hub="h0" data-domain="atlas" data-name="EU-WEST CLUSTER" style="cursor:pointer;"/>
             <circle cx="-45.07" cy="-84.76" r="3.6" fill="#81c675" data-hub="h0" data-domain="atlas"/>
-            <circle cx="-13.36" cy="-95.07" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h1" data-domain="core" data-name="MULTI-DOMAIN AGG." style="cursor:pointer;"/>
+            <circle cx="-13.36" cy="-95.07" r="7.2" fill="#1a1a1a" stroke="#d9dbda" stroke-width="2.4" data-hub="h1" data-domain="core" data-name="MULTI-DOMAIN AGG." style="cursor:pointer;"/>
             <circle cx="-13.36" cy="-95.07" r="3.6" fill="#d9dbda" data-hub="h1" data-domain="core"/>
-            <circle cx="19.96" cy="-93.90" r="7.2" fill="#474749" stroke="#81c675" stroke-width="2.4" data-hub="h2" data-domain="atlas" data-name="APAC CLUSTER" style="cursor:pointer;"/>
+            <circle cx="19.96" cy="-93.90" r="7.2" fill="#1a1a1a" stroke="#81c675" stroke-width="2.4" data-hub="h2" data-domain="atlas" data-name="APAC CLUSTER" style="cursor:pointer;"/>
             <circle cx="19.96" cy="-93.90" r="3.6" fill="#81c675" data-hub="h2" data-domain="atlas"/>
-            <circle cx="50.87" cy="-81.41" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h3" data-domain="core" data-name="EDGE CACHE RING N" style="cursor:pointer;"/>
+            <circle cx="50.87" cy="-81.41" r="7.2" fill="#1a1a1a" stroke="#d9dbda" stroke-width="2.4" data-hub="h3" data-domain="core" data-name="EDGE CACHE RING N" style="cursor:pointer;"/>
             <circle cx="50.87" cy="-81.41" r="3.6" fill="#d9dbda" data-hub="h3" data-domain="core"/>
-            <circle cx="71.34" cy="-64.24" r="7.2" fill="#474749" stroke="#1e968a" stroke-width="2.4" data-hub="h4" data-domain="cms" data-name="VERTEX REPL. NODE" style="cursor:pointer;"/>
+            <circle cx="71.34" cy="-64.24" r="7.2" fill="#1a1a1a" stroke="#1e968a" stroke-width="2.4" data-hub="h4" data-domain="cms" data-name="VERTEX REPL. NODE" style="cursor:pointer;"/>
             <circle cx="71.34" cy="-64.24" r="3.6" fill="#1e968a" data-hub="h4" data-domain="cms"/>
-            <circle cx="84.76" cy="-45.07" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h5" data-domain="core" data-name="SCHEMA VALID. POOL" style="cursor:pointer;"/>
+            <circle cx="84.76" cy="-45.07" r="7.2" fill="#1a1a1a" stroke="#d9dbda" stroke-width="2.4" data-hub="h5" data-domain="core" data-name="SCHEMA VALID. POOL" style="cursor:pointer;"/>
             <circle cx="84.76" cy="-45.07" r="3.6" fill="#d9dbda" data-hub="h5" data-domain="core"/>
-            <circle cx="92.73" cy="-24.85" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h6" data-domain="core" data-name="INDEX SHARD GRP A" style="cursor:pointer;"/>
+            <circle cx="92.73" cy="-24.85" r="7.2" fill="#1a1a1a" stroke="#d9dbda" stroke-width="2.4" data-hub="h6" data-domain="core" data-name="INDEX SHARD GRP A" style="cursor:pointer;"/>
             <circle cx="92.73" cy="-24.85" r="3.6" fill="#d9dbda" data-hub="h6" data-domain="core"/>
-            <circle cx="53.63" cy="-3.75" r="7.2" fill="#474749" stroke="#81c675" stroke-width="2.4" data-hub="h7" data-domain="atlas" data-name="NORDIC EDGE" style="cursor:pointer;"/>
+            <circle cx="53.63" cy="-3.75" r="7.2" fill="#1a1a1a" stroke="#81c675" stroke-width="2.4" data-hub="h7" data-domain="atlas" data-name="NORDIC EDGE" style="cursor:pointer;"/>
             <circle cx="53.63" cy="-3.75" r="3.6" fill="#81c675" data-hub="h7" data-domain="atlas"/>
-            <circle cx="77.95" cy="10.96" r="7.2" fill="#474749" stroke="#fcaf45" stroke-width="2.4" data-hub="h8" data-domain="lhcb" data-name="SIGNAL RELAY UK" style="cursor:pointer;"/>
+            <circle cx="77.95" cy="10.96" r="7.2" fill="#1a1a1a" stroke="#fcaf45" stroke-width="2.4" data-hub="h8" data-domain="lhcb" data-name="SIGNAL RELAY UK" style="cursor:pointer;"/>
             <circle cx="77.95" cy="10.96" r="3.6" fill="#fcaf45" data-hub="h8" data-domain="lhcb"/>
-            <circle cx="90.21" cy="32.83" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h9" data-domain="core" data-name="INDEX SHARD GRP B" style="cursor:pointer;"/>
+            <circle cx="90.21" cy="32.83" r="7.2" fill="#1a1a1a" stroke="#d9dbda" stroke-width="2.4" data-hub="h9" data-domain="core" data-name="INDEX SHARD GRP B" style="cursor:pointer;"/>
             <circle cx="90.21" cy="32.83" r="3.6" fill="#d9dbda" data-hub="h9" data-domain="core"/>
-            <circle cx="79.59" cy="53.68" r="7.2" fill="#474749" stroke="#1e968a" stroke-width="2.4" data-hub="h10" data-domain="cms" data-name="EDGE CACHE RING S" style="cursor:pointer;"/>
+            <circle cx="79.59" cy="53.68" r="7.2" fill="#1a1a1a" stroke="#1e968a" stroke-width="2.4" data-hub="h10" data-domain="cms" data-name="EDGE CACHE RING S" style="cursor:pointer;"/>
             <circle cx="79.59" cy="53.68" r="3.6" fill="#1e968a" data-hub="h10" data-domain="cms"/>
-            <circle cx="64.24" cy="71.34" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h11" data-domain="core" data-name="STREAM BUFFER POOL" style="cursor:pointer;"/>
+            <circle cx="64.24" cy="71.34" r="7.2" fill="#1a1a1a" stroke="#d9dbda" stroke-width="2.4" data-hub="h11" data-domain="core" data-name="STREAM BUFFER POOL" style="cursor:pointer;"/>
             <circle cx="64.24" cy="71.34" r="3.6" fill="#d9dbda" data-hub="h11" data-domain="core"/>
-            <circle cx="42.08" cy="86.28" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h12" data-domain="core" data-name="LATAM CLUSTER" style="cursor:pointer;"/>
+            <circle cx="42.08" cy="86.28" r="7.2" fill="#1a1a1a" stroke="#d9dbda" stroke-width="2.4" data-hub="h12" data-domain="core" data-name="LATAM CLUSTER" style="cursor:pointer;"/>
             <circle cx="42.08" cy="86.28" r="3.6" fill="#d9dbda" data-hub="h12" data-domain="core"/>
-            <circle cx="13.36" cy="95.07" r="7.2" fill="#474749" stroke="#81c675" stroke-width="2.4" data-hub="h13" data-domain="atlas" data-name="AFRICA CLUSTER" style="cursor:pointer;"/>
+            <circle cx="13.36" cy="95.07" r="7.2" fill="#1a1a1a" stroke="#81c675" stroke-width="2.4" data-hub="h13" data-domain="atlas" data-name="AFRICA CLUSTER" style="cursor:pointer;"/>
             <circle cx="13.36" cy="95.07" r="3.6" fill="#81c675" data-hub="h13" data-domain="atlas"/>
-            <circle cx="-19.96" cy="93.90" r="7.2" fill="#474749" stroke="#1e968a" stroke-width="2.4" data-hub="h14" data-domain="cms" data-name="NA-EAST CLUSTER" style="cursor:pointer;"/>
+            <circle cx="-19.96" cy="93.90" r="7.2" fill="#1a1a1a" stroke="#1e968a" stroke-width="2.4" data-hub="h14" data-domain="cms" data-name="NA-EAST CLUSTER" style="cursor:pointer;"/>
             <circle cx="-19.96" cy="93.90" r="3.6" fill="#1e968a" data-hub="h14" data-domain="cms"/>
-            <circle cx="-50.87" cy="81.41" r="7.2" fill="#474749" stroke="#d9dbda" stroke-width="2.4" data-hub="h15" data-domain="core" data-name="NA-WEST CLUSTER" style="cursor:pointer;"/>
+            <circle cx="-50.87" cy="81.41" r="7.2" fill="#1a1a1a" stroke="#d9dbda" stroke-width="2.4" data-hub="h15" data-domain="core" data-name="NA-WEST CLUSTER" style="cursor:pointer;"/>
             <circle cx="-50.87" cy="81.41" r="3.6" fill="#d9dbda" data-hub="h15" data-domain="core"/>
           </g>
           <g id="kgOverlayLayer" pointer-events="none"></g>
           <g id="kgCenterHub" style="cursor:pointer;">
-            <circle cx="0" cy="0" r="46" fill="#474749" stroke="#e9e7e1" stroke-width="5" id="kgCenterRingOuter"/>
-            <circle cx="0" cy="0" r="38" fill="#474749" stroke="#6f6f71" stroke-width="1"/>
-            <text x="0" y="-3" font-family="'Oswald',sans-serif" font-weight="600" font-size="11.5" fill="#f3f1ec" text-anchor="middle" letter-spacing=".5px">GRAPH</text>
-            <text x="0" y="11" font-family="'Oswald',sans-serif" font-weight="600" font-size="11.5" fill="#f3f1ec" text-anchor="middle" letter-spacing=".5px">CORE</text>
+            <circle cx="0" cy="0" r="46" fill="#1a1a1a" stroke="#e9e7e1" stroke-width="5" id="kgCenterRingOuter"/>
+            <circle cx="0" cy="0" r="38" fill="#1a1a1a" stroke="#6f6f71" stroke-width="1"/>
+            <text x="0" y="-5" font-family="'Oswald',sans-serif" font-weight="600" font-size="9" fill="#f3f1ec" text-anchor="middle" letter-spacing=".5px">RAVEN DATA</text>
+            <text x="0" y="7" font-family="'Oswald',sans-serif" font-weight="600" font-size="9" fill="#f3f1ec" text-anchor="middle" letter-spacing=".5px">CENTRE</text>
           </g>
           <text x="0" y="27" font-family="'JetBrains Mono',monospace" font-size="3.8" fill="#888" text-anchor="middle" letter-spacing=".3">73K WRITES/SEC</text>
         </svg>
       </div>
 
-      <div class="kgraph-hud" id="kgHud">Click <span>nodes</span> to trace pathways · Shift+click to multi-select · Click <span>GRAPH CORE</span> to pulse all</div>
+      <div class="kgraph-hud" id="kgHud">Click <span>nodes</span> to trace pathways · Shift+click to multi-select · Click <span>RAVEN DATA CENTRE</span> to pulse all</div>
+
+      <!-- CERN-style map inset -->
+      <div class="kg-map-inset">
+        <svg viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r="45" fill="none" stroke="rgba(255,255,255,.15)" stroke-width="1"/>
+          <ellipse cx="50" cy="50" rx="35" ry="20" fill="none" stroke="#00A896" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <circle cx="50" cy="50" r="4" fill="#FDB913"/>
+          <text x="50" y="92" font-size="6" fill="#888" text-anchor="middle" font-family="monospace">EPWA</text>
+        </svg>
+      </div>
+
+      <!-- CERN-style legend -->
+      <div class="kg-legend">
+        <h5>Data Layers</h5>
+        <div class="kg-legend-item"><div class="kg-legend-dot" style="background:#81c675"></div><span>Schema · 48%</span></div>
+        <div class="kg-legend-item"><div class="kg-legend-dot" style="background:#14aae1"></div><span>Stream · 13%</span></div>
+        <div class="kg-legend-item"><div class="kg-legend-dot" style="background:#fcaf45"></div><span>Signal · 25%</span></div>
+        <div class="kg-legend-item"><div class="kg-legend-dot" style="background:#1e968a"></div><span>Vertex · 8%</span></div>
+        <div class="kg-legend-item"><div class="kg-legend-dot" style="background:#d9dbda"></div><span>Multi · 6%</span></div>
+      </div>
 
       <div class="kgraph-stats">
         <div class="kg-stat-section">
-          <h4>The Knowledge Graph</h4>
+          <h4>The Security Network</h4>
           <div class="kg-stat-cols kg-cols-2">
-            <div class="kg-stat-block"><span class="kg-stat-num">10</span><span class="kg-stat-label">Thousand Sources</span><p class="kg-stat-copy">APIs, internal tools, and crawled documents spanning every team and surface.</p></div>
-            <div class="kg-stat-block"><span class="kg-stat-num">$3.5<sup style="font-size:.45em;">M</sup></span><span class="kg-stat-label">Infra Spend</span><p class="kg-stat-copy">Yearly cost across compute, storage tiering, and replica bandwidth.</p></div>
-            <div class="kg-stat-block"><span class="kg-stat-num">27<sup style="font-size:.45em;">ms</sup></span><span class="kg-stat-label">Query Latency</span><p class="kg-stat-copy">Avg time from query to fully resolved multi-hop answer at the edge.</p></div>
+            <div class="kg-stat-block"><span class="kg-stat-num" data-kg-stat="sources">10</span><span class="kg-stat-label">Thousand Sources</span><p class="kg-stat-copy">CCTV feeds, RF sensors, biometric scanners, and audit logs spanning every perimeter zone.</p></div>
+            <div class="kg-stat-block"><span class="kg-stat-num" data-kg-stat="spend">$3.5<sup style="font-size:.45em;">M</sup></span><span class="kg-stat-label">Infra Spend</span><p class="kg-stat-copy">Yearly cost across compute, evidence storage tiering, and replica bandwidth.</p></div>
+            <div class="kg-stat-block"><span class="kg-stat-num" data-kg-stat="latency">27<sup style="font-size:.45em;">ms</sup></span><span class="kg-stat-label">Query Latency</span><p class="kg-stat-copy">Avg time from threat detection to fully resolved multi-hop incident report.</p></div>
           </div>
         </div>
         <div class="kg-stat-section">
           <h4>The Data</h4>
           <div class="kg-stat-cols kg-cols-3">
-            <div class="kg-stat-block"><span style="font-size:9px;color:#c9a24a;display:block;">Gate One</span><span class="kg-stat-num" style="font-size:26px;">99.99%</span><span class="kg-stat-label">Discarded</span><p class="kg-stat-copy">High-volume stream reduced at first gate.</p></div>
-            <div class="kg-stat-block"><span style="font-size:9px;color:#c9a24a;display:block;">Graph Core</span><span class="kg-stat-num">73<span style="font-size:14px;"> K</span></span><span class="kg-stat-label">Writes/sec</span><p class="kg-stat-copy">Each accepted record committed immediately.</p></div>
-            <div class="kg-stat-block"><span style="font-size:9px;color:#c9a24a;display:block;">Tier 1</span><span class="kg-stat-num">11</span><span class="kg-stat-label">Replicas</span><p class="kg-stat-copy">Tier 1 sites hold the long-term archive.</p></div>
+            <div class="kg-stat-block"><span style="font-size:9px;color:#c9a24a;display:block;">Gate One</span><span class="kg-stat-num" style="font-size:26px;" data-kg-stat="discarded">99.99%</span><span class="kg-stat-label">Discarded</span><p class="kg-stat-copy">High-volume sensor stream reduced at first gate.</p></div>
+            <div class="kg-stat-block"><span style="font-size:9px;color:#c9a24a;display:block;">Graph Core</span><span class="kg-stat-num" data-kg-stat="writes">73<span style="font-size:14px;"> K</span></span><span class="kg-stat-label">Writes/sec</span><p class="kg-stat-copy">Each accepted record committed immediately.</p></div>
+            <div class="kg-stat-block"><span style="font-size:9px;color:#c9a24a;display:block;">Tier 1</span><span class="kg-stat-num" data-kg-stat="replicas">11</span><span class="kg-stat-label">Replicas</span><p class="kg-stat-copy">Tier 1 sites hold the long-term evidence archive.</p></div>
           </div>
         </div>
         <div class="kg-stat-section">
           <h4>Less Than a Second</h4>
           <div class="kg-stat-cols kg-cols-4">
-            <div class="kg-stat-block"><span class="kg-stat-num" style="font-size:26px;">1<sup style="font-size:.45em;">PB</sup></span><span class="kg-stat-label">Every Second</span><p class="kg-stat-copy">1,000 terabytes produced every second at network peak.</p></div>
-            <div class="kg-stat-block"><span class="kg-stat-num">140</span><span class="kg-stat-label">Replicas</span><p class="kg-stat-copy">Distributed globally across 6 continents.</p></div>
+            <div class="kg-stat-block"><span class="kg-stat-num" style="font-size:26px;" data-kg-stat="throughput">1<sup style="font-size:.45em;">PB</sup></span><span class="kg-stat-label">Every Second</span><p class="kg-stat-copy">1,000 terabytes of sensor data produced every second at network peak.</p></div>
+            <div class="kg-stat-block"><span class="kg-stat-num" data-kg-stat="global">140</span><span class="kg-stat-label">Replicas</span><p class="kg-stat-copy">Distributed globally across 6 continents.</p></div>
           </div>
         </div>
       </div>
@@ -18183,7 +18891,7 @@ FILE: frontend/index.html
           <div style="word-break:break-all;"><strong>Latest Hash Block:</strong> <code id="audit-latest-hash" style="font-family:'Space Mono',monospace;color:var(--color-unidentified);">N/A</code></div>
         </div>
         <h4 style="font-family:'Space Mono',monospace;font-size:0.75rem;margin-top:5px;">Verification Engine Logs:</h4>
-        <pre id="audit-logs-output" style="background:#0b1013;color:var(--color-green);font-family:'Space Mono',monospace;font-size:0.75rem;padding:12px;border-radius:6px;max-height:130px;overflow-y:auto;white-space:pre-wrap;border:1px solid var(--border-color);"></pre>
+        <pre id="audit-logs-output" style="background:var(--bg-input);color:var(--color-green);font-family:'Space Mono',monospace;font-size:0.75rem;padding:12px;border-radius:6px;max-height:130px;overflow-y:auto;white-space:pre-wrap;border:1px solid var(--border-color);"></pre>
       </div>
     </div>
   </div>
@@ -18192,17 +18900,20 @@ FILE: frontend/index.html
   <div id="toast-container"></div>
 
   <!-- Javascript Logic Modules -->
-  <script src="/static/camera-mock.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="camera-mock.js"></script>
+  <script src="app.js"></script>
 
   <!-- ═══ EXTERNAL LOGIC MODULES ═════════════════════════════════════════════ -->
-  <script src="/static/farm-calendar.js"></script>
-  <script src="/static/kg-interactivity.js"></script>
-  <script type="module" src="/static/voice-agent.js"></script>
+  <script src="farm-calendar.js"></script>
+  <script src="kg-interactivity.js"></script>
+  <script src="voice-agent-visual.js"></script>
+  <script type="module" src="voice-agent.js"></script>
+  <script src="debug-console.js"></script>
+  <script src="video-ingest.js"></script>
 
   <!-- Login Modal -->
   <div id="login-modal" class="audit-modal" style="display: none; align-items: center; justify-content: center; z-index: 10000; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85);">
-    <div class="panel-card" style="width: 360px; padding: 24px; border: 1px solid var(--border-color); background: #0c1216; box-shadow: 0 8px 32px rgba(0,0,0,0.5);">
+    <div class="panel-card" style="width: 360px; padding: 24px; border: 1px solid var(--border-color); background: var(--bg-card); box-shadow: var(--shadow-lg);">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
         <h3 style="font-family: 'Space Mono', monospace; font-size: 1.1rem; color: #fff; margin: 0; letter-spacing: 1px;">OPERATOR SIGN-IN</h3>
         <button id="login-modal-close" style="background: none; border: none; color: #888; cursor: pointer; font-size: 1.2rem;">&times;</button>
@@ -18230,7 +18941,22 @@ FILE: frontend/kg-interactivity.js
 ========================================================================
 (function(){
   const KG_COLORS={atlas:'#81c675',cms:'#1e968a',lhcb:'#fcaf45',alice:'#14aae1',core:'#d9dbda'};
+  const N8N_WEBHOOK='https://proximusraven.app.n8n.cloud/webhook/knowledge-ingester';
+  const OUTER_R=266;
+  const FAN_PER_HUB=14;
   let kgSelectedNodes=new Set(),kgActiveGlows=[],kgGlowIntensity=5;
+  let kgIngestData=null;
+
+  const KG_LABELS=[
+    'RAW INGEST','TIER-0 BUF','SCHEMA VAL','INDEX SHRD','EDGE RELAY','SIGNAL MUX',
+    'STREAM GATE','REPLICA A','REPLICA B','AUDIT LOG','HASH CHAIN','EVIDENCE PKG',
+    'YOLO FILTER','QWEN-VL','BIOMETRIC','RF SENSOR','HITL QUEUE','ALERT DISP',
+    'FORENSIC','TRAJECTORY','HOMOGRAPHY','CAM FEED','INCIDENT DB','SEARCH IDX',
+    'TIER-1 ARC','TIER-2 ARC','COLD STORE','HOT CACHE','WRITE PATH','READ PATH',
+    'MULTI-HOP','LATENCY','THROUGHPUT','DISCARD','TRIGGER-1','TRIGGER-2',
+    'CMS VERTEX','ATLAS SCH','ALICE STR','LHCb SIG','CORE AGG','NA-EAST','EU-WEST',
+    'APAC NODE','LATAM RING','AFRICA HUB','NORDIC EDGE','UK RELAY','BUFFER POOL'
+  ];
 
   function kgGetOverlay(){return document.getElementById('kgOverlayLayer');}
   function kgGetSvg(){return document.getElementById('kgMainSvg');}
@@ -18293,9 +19019,169 @@ FILE: frontend/kg-interactivity.js
     else{badge.classList.remove('show');}
   }
 
+  function kgUpdateStats(data){
+    if(!data)return;
+    const stats=data.stats||data;
+    document.querySelectorAll('[data-kg-stat]').forEach(el=>{
+      const key=el.getAttribute('data-kg-stat');
+      if(stats[key]!==undefined)el.textContent=stats[key];
+    });
+    const hud=document.getElementById('kgHud');
+    if(hud&&data.message)hud.innerHTML=data.message;
+  }
+
+  function kgApplyIngestNodes(nodes){
+    if(!nodes||!nodes.length)return;
+    const layer=document.getElementById('kgNodeLayer');
+    if(!layer)return;
+    nodes.forEach((node,i)=>{
+      const angle=(i/nodes.length)*Math.PI*2-Math.PI/2;
+      const r=200;
+      const cx=Math.cos(angle)*r, cy=Math.sin(angle)*r;
+      const domain=node.domain||'core';
+      const color=KG_COLORS[domain]||'#d9dbda';
+      const hubId=node.id||'ing'+i;
+      const g=document.createElementNS('http://www.w3.org/2000/svg','g');
+      g.innerHTML=`<circle cx="${cx}" cy="${cy}" r="7.2" fill="#1a1a1a" stroke="${color}" stroke-width="2.4" data-hub="${hubId}" data-domain="${domain}" data-name="${node.name||hubId}" style="cursor:pointer;"/><circle cx="${cx}" cy="${cy}" r="3.6" fill="${color}" data-hub="${hubId}" data-domain="${domain}"/>`;
+      layer.appendChild(g);
+    });
+  }
+
+  async function kgFetchFromN8n(){
+    const hud=document.getElementById('kgHud');
+    const statusEl=document.getElementById('kgIngestStatus');
+    if(statusEl)statusEl.textContent='Syncing…';
+    if(hud)hud.innerHTML='Ingesting from <span>n8n webhook</span>…';
+    try{
+      const resp=await fetch(N8N_WEBHOOK,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'fetch',source:'raven-soc',timestamp:new Date().toISOString()})
+      });
+      if(!resp.ok)throw new Error('HTTP '+resp.status);
+      const data=await resp.json();
+      kgIngestData=data;
+      if(data.nodes)kgApplyIngestNodes(data.nodes);
+      kgUpdateStats(data);
+      if(statusEl){statusEl.textContent='Synced';statusEl.style.color='#81c675';}
+      if(hud)hud.innerHTML='Data ingested from <span>n8n</span> · Click <span>nodes</span> to trace pathways';
+      return data;
+    }catch(err){
+      console.warn('n8n webhook ingest failed:',err);
+      if(statusEl){statusEl.textContent='Offline';statusEl.style.color='#fcaf45';}
+      if(hud)hud.innerHTML='Webhook offline — using <span>cached graph</span> · Click <span>nodes</span> to trace';
+      return null;
+    }
+  }
+
+  async function kgPushToN8n(payload){
+    try{
+      await fetch(N8N_WEBHOOK,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload)
+      });
+    }catch(err){console.warn('n8n push failed:',err);}
+  }
+
+  function kgBuildGraphStructure(){
+    const svg=kgGetSvg();if(!svg)return;
+    const linkLayer=document.getElementById('kgLinkLayer');
+    const fanLayer=document.getElementById('kgFanLayer');
+    const labelLayer=document.getElementById('kgLabelLayer');
+    if(!linkLayer||!fanLayer||!labelLayer)return;
+
+    const hubs=[...document.querySelectorAll('#kgNodeLayer circle[data-hub][data-name]')];
+    const seen=new Set();
+    const hubData=[];
+    hubs.forEach(h=>{
+      const id=h.getAttribute('data-hub');
+      if(seen.has(id))return;
+      seen.add(id);
+      hubData.push({
+        id,
+        cx:parseFloat(h.getAttribute('cx')),
+        cy:parseFloat(h.getAttribute('cy')),
+        domain:h.getAttribute('data-domain')||'core',
+        color:KG_COLORS[h.getAttribute('data-domain')]||'#d9dbda'
+      });
+    });
+
+    linkLayer.innerHTML='';
+    hubData.forEach(h=>{
+      const line=document.createElementNS('http://www.w3.org/2000/svg','line');
+      line.setAttribute('x1','0');line.setAttribute('y1','0');
+      line.setAttribute('x2',String(h.cx*0.92));line.setAttribute('y2',String(h.cy*0.92));
+      line.setAttribute('stroke',h.color);line.setAttribute('stroke-width','1.1');
+      line.setAttribute('opacity','.95');line.setAttribute('data-hub',h.id);
+      linkLayer.appendChild(line);
+    });
+
+    fanLayer.innerHTML='';
+    let fanIdx=0;
+    hubData.forEach(h=>{
+      const baseAng=Math.atan2(h.cy,h.cx);
+      for(let f=0;f<FAN_PER_HUB;f++){
+        const spread=(f-FAN_PER_HUB/2)*(Math.PI/180)*4.2;
+        const ang=baseAng+spread;
+        const ex=Math.cos(ang)*OUTER_R,ey=Math.sin(ang)*OUTER_R;
+        const cpx=h.cx+(ex-h.cx)*0.55+(ey-h.cy)*0.12;
+        const cpy=h.cy+(ey-h.cy)*0.55-(ex-h.cx)*0.12;
+        const path=document.createElementNS('http://www.w3.org/2000/svg','path');
+        path.setAttribute('d',`M ${h.cx} ${h.cy} Q ${cpx} ${cpy} ${ex} ${ey}`);
+        path.setAttribute('stroke',h.color);
+        path.setAttribute('class','kg-fan-line glow-active');
+        path.style.animationDelay=(fanIdx*0.04)+'s';
+        path.setAttribute('data-hub',h.id);
+        fanLayer.appendChild(path);
+        fanIdx++;
+      }
+    });
+
+    labelLayer.innerHTML='';
+    const labelCount=Math.min(KG_LABELS.length,72);
+    for(let i=0;i<labelCount;i++){
+      const ang=(i/labelCount)*Math.PI*2-Math.PI/2;
+      const lx=Math.cos(ang)*OUTER_R,ly=Math.sin(ang)*OUTER_R;
+      const rot=(ang*180/Math.PI)+90;
+      const t=document.createElementNS('http://www.w3.org/2000/svg','text');
+      t.setAttribute('x',String(lx));t.setAttribute('y',String(ly));
+      t.setAttribute('transform',`rotate(${rot},${lx},${ly})`);
+      t.setAttribute('text-anchor','middle');
+      t.setAttribute('class','kg-circ-label');
+      t.textContent=KG_LABELS[i%KG_LABELS.length];
+      labelLayer.appendChild(t);
+    }
+
+    const ringLayer=svg.querySelector('.kg-ring-layer');
+    if(ringLayer){
+      [272,278,284].forEach(r=>{
+        const c=document.createElementNS('http://www.w3.org/2000/svg','circle');
+        c.setAttribute('cx','0');c.setAttribute('cy','0');c.setAttribute('r',String(r));
+        c.setAttribute('class','kg-outer-ring');
+        ringLayer.parentNode.insertBefore(c,ringLayer);
+      });
+    }
+  }
+
+  function kgStartAmbientGlow(){
+    const lines=document.querySelectorAll('.kg-fan-line');
+    lines.forEach((el,i)=>{
+      el.classList.add('glow-active');
+      el.style.animationDelay=(i*0.03)+'s';
+    });
+  }
+
   document.addEventListener('DOMContentLoaded',()=>{
     const nodeLayer=document.getElementById('kgNodeLayer');
     if(!nodeLayer)return;
+
+    kgBuildGraphStructure();
+    kgStartAmbientGlow();
+    kgFetchFromN8n();
+
+    const ingestBtn=document.getElementById('kg-btn-ingest');
+    if(ingestBtn)ingestBtn.addEventListener('click',kgFetchFromN8n);
 
     nodeLayer.addEventListener('click',e=>{
       const ring=e.target.closest('[data-hub][data-name]');if(!ring)return;
@@ -18304,15 +19190,18 @@ FILE: frontend/kg-interactivity.js
       if(!e.shiftKey)kgClearOverlays();
       const p=kgSvgPoint(e);kgCreateRipple(p.x,p.y,color);
       kgIlluminateHub(hubId,color);kgSelectedNodes.add(hubId);kgUpdateBadge();
+      kgPushToN8n({action:'node_select',hubId,domain,name,timestamp:new Date().toISOString()});
       const pi=document.getElementById('kgPanelInner');const panel=document.getElementById('kgInfoPanel');
       if(pi&&panel){
+        const ingested=kgIngestData&&kgIngestData.nodes?kgIngestData.nodes.find(n=>(n.id||'')===hubId):null;
         pi.innerHTML=`<button style="position:absolute;top:14px;right:14px;background:#232323;border:none;border-radius:50%;width:28px;height:28px;color:#888;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;" id="kgPC2">&#x2715;</button>
           <div style="font-size:9px;color:#fcaf45;letter-spacing:.8px;text-transform:uppercase;margin-bottom:6px;">HUB NODE · ${domain.toUpperCase()}</div>
           <div style="font-size:18px;font-weight:600;color:#f3f1ec;margin-bottom:12px;">${name}</div>
           <div style="display:inline-block;padding:3px 9px;border-radius:6px;font-size:10px;letter-spacing:.4px;margin-bottom:14px;background:${color}22;color:${color};border:1px solid ${color}44;">${domain.toUpperCase()} DOMAIN</div>
+          ${ingested&&ingested.description?`<div style="font-size:11px;color:#a8a6a1;line-height:1.5;margin-bottom:14px;">${ingested.description}</div>`:''}
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
-            <div style="background:#1f1f1f;border-radius:8px;padding:10px;"><span style="font-size:20px;font-weight:700;color:#fff;display:block;">${Math.floor(Math.random()*80+20)}ms</span><span style="font-size:9px;color:#666;letter-spacing:.4px;text-transform:uppercase;">Avg Latency</span></div>
-            <div style="background:#1f1f1f;border-radius:8px;padding:10px;"><span style="font-size:20px;font-weight:700;color:#fff;display:block;">${(Math.random()*9+0.5).toFixed(1)}K</span><span style="font-size:9px;color:#666;letter-spacing:.4px;text-transform:uppercase;">Writes/sec</span></div>
+            <div style="background:#1f1f1f;border-radius:8px;padding:10px;"><span style="font-size:20px;font-weight:700;color:#fff;display:block;">${ingested&&ingested.latency?ingested.latency:Math.floor(Math.random()*80+20)}ms</span><span style="font-size:9px;color:#666;letter-spacing:.4px;text-transform:uppercase;">Avg Latency</span></div>
+            <div style="background:#1f1f1f;border-radius:8px;padding:10px;"><span style="font-size:20px;font-weight:700;color:#fff;display:block;">${ingested&&ingested.writes?ingested.writes:(Math.random()*9+0.5).toFixed(1)}K</span><span style="font-size:9px;color:#666;letter-spacing:.4px;text-transform:uppercase;">Writes/sec</span></div>
           </div>`;
         panel.classList.add('open');
         document.getElementById('kgPC2').addEventListener('click',()=>panel.classList.remove('open'));
@@ -18334,10 +19223,11 @@ FILE: frontend/kg-interactivity.js
           setTimeout(()=>{kgIlluminateHub(hubId,color);kgCreateRipple(0,0,color);},i*80);
         });
         kgSelectedNodes.add('CORE');kgUpdateBadge();
+        kgPushToN8n({action:'pulse_all',timestamp:new Date().toISOString()});
         const cr=document.getElementById('kgCenterRingOuter');
         if(cr){cr.style.stroke='#fcaf45';cr.style.strokeWidth='8';setTimeout(()=>{cr.style.stroke='#e9e7e1';cr.style.strokeWidth='5';},800);}
       });
-      centerHub.addEventListener('mouseover',e=>kgShowTip(e,'GRAPH CORE','Click to pulse entire network','#f3f1ec'));
+      centerHub.addEventListener('mouseover',e=>kgShowTip(e,'RAVEN DATA CENTRE','Click to pulse entire network','#f3f1ec'));
       centerHub.addEventListener('mousemove',e=>kgMoveTip(e));
       centerHub.addEventListener('mouseout',kgHideTip);
     }
@@ -18352,6 +19242,9 @@ FILE: frontend/kg-interactivity.js
         });
         document.querySelectorAll('.kg-link-layer line').forEach(el=>{
           el.style.opacity=domain==='all'?'':'.15';
+        });
+        document.querySelectorAll('.kg-fan-line').forEach(el=>{
+          el.style.opacity=domain==='all'?'':'.08';
         });
       });
     });
@@ -18385,6 +19278,7 @@ FILE: frontend/kg-interactivity.js
       kgClearOverlays();
       document.querySelectorAll('#kgNodeLayer circle[data-domain]').forEach(el=>el.style.opacity='');
       document.querySelectorAll('.kg-link-layer line').forEach(el=>el.style.opacity='');
+      document.querySelectorAll('.kg-fan-line').forEach(el=>el.style.opacity='');
       document.querySelectorAll('.kgt-btn[data-kgdomain]').forEach(b=>b.classList.remove('active'));
       const allBtn=document.querySelector('.kgt-btn[data-kgdomain="all"]');if(allBtn)allBtn.classList.add('active');
       const panel=document.getElementById('kgInfoPanel');if(panel)panel.classList.remove('open');
@@ -18411,45 +19305,67 @@ FILE: frontend/style.css
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
 
 :root {
-  /* Core Theme Colors */
-  --bg-main:          #152026;       /* Dark slate-teal outer background */
-  --bg-side:          #0e161a;       /* Deep dark slate-teal for sidebar & header */
-  --bg-card:          #1c2a32;       /* Medium slate-teal for panel cards */
-  --bg-card-hdr:      #21323c;       /* Slightly lighter slate-teal for card headers */
-  --bg-input:         #10191e;       /* Deep dark slate for inputs */
-  
-  /* Accents & Highlights */
-  --color-accent:       #7b61ff;     /* Vibrant violet accent */
-  --color-accent-glow:  rgba(123, 97, 255, 0.25);
-  --color-blue:         #3b82f6;     /* Blue accent */
-  --color-blue-glow:    rgba(59, 130, 246, 0.2);
-  --color-green:        #2ed573;     /* Success / Live green */
+  /* Light mode (default) */
+  --bg-main:          #f0f2f5;
+  --bg-side:          #ffffff;
+  --bg-card:          #ffffff;
+  --bg-card-hdr:      #f8f9fb;
+  --bg-input:         #f4f5f7;
 
-  /* Severity & Stats Colors */
-  --color-hazardous:    #f15b6c;     /* Rose red */
-  --color-unidentified: #a29bfe;     /* Pastel purple */
-  --color-interruptions:#f1c40f;     /* Amber yellow */
-  --color-tracks:       #57606f;     /* Cool grey */
+  --color-accent:       #5b4cdb;
+  --color-accent-glow:  rgba(91, 76, 219, 0.18);
+  --color-blue:         #2563eb;
+  --color-blue-glow:    rgba(37, 99, 235, 0.15);
+  --color-green:        #16a34a;
 
-  /* Text Colors */
-  --text-primary:     #ffffff;       /* Pure white */
-  --text-secondary:   #8da2ac;       /* Muted blue-gray */
-  --text-muted:       #5c727d;       /* Darker blue-gray for placeholders & captions */
+  --color-hazardous:    #dc2626;
+  --color-unidentified: #7c3aed;
+  --color-interruptions:#d97706;
+  --color-tracks:       #64748b;
 
-  /* Layout Dimensions */
+  --text-primary:     #111827;
+  --text-secondary:   #4b5563;
+  --text-muted:       #9ca3af;
+
   --sidebar-w:        75px;
   --header-h:         60px;
   --right-panel-w:    310px;
 
-  /* Borders & Shadows */
-  --border-color:     rgba(255, 255, 255, 0.08);
-  --border-hover:     rgba(255, 255, 255, 0.15);
-  --shadow-lg:        0 12px 28px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
-  --shadow-sm:        0 2px 8px rgba(0, 0, 0, 0.15);
+  --border-color:     rgba(0, 0, 0, 0.08);
+  --border-hover:     rgba(0, 0, 0, 0.14);
+  --shadow-lg:        0 12px 28px rgba(0, 0, 0, 0.08), 0 4px 12px rgba(0, 0, 0, 0.04);
+  --shadow-sm:        0 2px 8px rgba(0, 0, 0, 0.06);
 
-  /* Transitions */
   --tr:               0.2s cubic-bezier(0.4, 0, 0.2, 1);
   --tr-slow:          0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="dark"] {
+  --bg-main:          #0a0a0a;
+  --bg-side:          #0a0a0a;
+  --bg-card:          #141414;
+  --bg-card-hdr:      #1a1a1a;
+  --bg-input:         #111111;
+
+  --color-accent:       #7b61ff;
+  --color-accent-glow:  rgba(123, 97, 255, 0.25);
+  --color-blue:         #3b82f6;
+  --color-blue-glow:    rgba(59, 130, 246, 0.2);
+  --color-green:        #2ed573;
+
+  --color-hazardous:    #f15b6c;
+  --color-unidentified: #a29bfe;
+  --color-interruptions:#f1c40f;
+  --color-tracks:       #57606f;
+
+  --text-primary:     #ffffff;
+  --text-secondary:   #a0a0a0;
+  --text-muted:       #666666;
+
+  --border-color:     rgba(255, 255, 255, 0.08);
+  --border-hover:     rgba(255, 255, 255, 0.15);
+  --shadow-lg:        0 12px 28px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-sm:        0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
 /* ── Reset & Base Styles ────────────────────────────────────────── */
@@ -18477,6 +19393,7 @@ body {
   grid-template-areas:
     "sidebar header"
     "sidebar main";
+  transition: background var(--tr-slow), color var(--tr-slow);
 }
 
 /* Custom Scrollbar */
@@ -18505,6 +19422,7 @@ body {
   align-items: center;
   padding: 15px 0;
   z-index: 100;
+  transition: background var(--tr-slow), border-color var(--tr-slow);
 }
 
 .sidebar-logo {
@@ -18934,7 +19852,7 @@ body {
   width: 100%;
   height: 100%;
   position: relative;
-  background: #080e13;
+  background: var(--bg-input);
   overflow: hidden;
 }
 
@@ -19072,14 +19990,61 @@ body {
   width: 100%;
   height: 100%;
   min-height: 160px;
-  background: #0b141a;
+  background: #1a1a1a;
 }
 
-/* Dark tile overrides */
 .leaflet-container {
-  background: #0b141a;
+  background: #1a1a1a;
   font-family: 'Inter', sans-serif;
 }
+
+/* Airport map fullscreen */
+.map-card-body {
+  position: relative;
+}
+.map-card-body:fullscreen,
+.map-card-body:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  background: #0a0a0a;
+}
+.map-card-body:fullscreen #leaflet-map,
+.map-card-body:-webkit-full-screen #leaflet-map {
+  min-height: 100vh;
+  height: 100vh;
+}
+.map-fullscreen-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 500;
+  background: rgba(10, 10, 10, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  transition: background var(--tr), border-color var(--tr);
+}
+.map-fullscreen-btn:hover {
+  background: rgba(20, 20, 20, 0.9);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.map-fullscreen-btn svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+/* Theme toggle */
+.theme-toggle-btn .ico-sun { display: block; }
+.theme-toggle-btn .ico-moon { display: none; }
+[data-theme="dark"] .theme-toggle-btn .ico-sun { display: none; }
+[data-theme="dark"] .theme-toggle-btn .ico-moon { display: block; }
 
 /* Zoom controls dark theme */
 .leaflet-control-zoom {
@@ -19186,6 +20151,124 @@ body {
   background: var(--bg-card);
   overflow-y: auto;
   height: 100%;
+}
+
+.activity-list-horizontal {
+  flex-direction: row;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  gap: 0;
+  flex: 1;
+  height: auto;
+  min-height: 52px;
+}
+
+.activity-list-horizontal::-webkit-scrollbar {
+  display: none;
+}
+
+.activity-scroll-wrap {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  position: relative;
+}
+
+.activity-scroll-btn {
+  flex-shrink: 0;
+  width: 28px;
+  background: var(--bg-card-hdr);
+  border: none;
+  border-right: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--tr), color var(--tr);
+}
+
+.activity-scroll-btn:last-of-type {
+  border-right: none;
+  border-left: 1px solid var(--border-color);
+}
+
+.activity-scroll-btn:hover {
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.activity-scroll-btn.hidden {
+  display: none;
+}
+
+.activity-card-body {
+  min-height: 52px;
+}
+
+.activity-list-horizontal .activity-item {
+  flex: 0 0 100%;
+  min-width: 100%;
+  border-bottom: none;
+  border-right: 1px solid var(--border-color);
+}
+
+.activity-list-horizontal .activity-item:last-child {
+  border-right: none;
+}
+
+.ledger-activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.ledger-activity-list .activity-item {
+  width: 100%;
+  border-bottom: 1px solid var(--border-color);
+  padding: 12px 18px;
+}
+
+.ledger-activity-list .activity-item:last-child {
+  border-bottom: none;
+}
+
+.ledger-activity-list .activity-text {
+  white-space: normal;
+  max-width: none;
+}
+
+/* Theme-aware full-page views (calendar, voice agent, knowledge graph) */
+.theme-page {
+  background: var(--bg-main);
+  color: var(--text-primary);
+  min-height: 100%;
+  overflow-y: auto;
+  transition: background var(--tr-slow), color var(--tr-slow);
+}
+
+#view-farm-calendar {
+  padding: 40px 20px;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+#view-farm-calendar.active {
+  display: flex;
+}
+
+.theme-page .fc-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+  max-width: 544px;
 }
 
 .activity-item {
@@ -20345,6 +21428,105 @@ body {
   color: var(--text-primary);
 }
 
+.toast.toast-persistent {
+  border-left-width: 4px;
+  animation: toast-pulse 2s ease-in-out infinite;
+}
+
+@keyframes toast-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.85; }
+}
+
+/* ── Debug Console ─────────────────────────────────────────────── */
+.debug-console-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.debug-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.debug-stat {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.debug-stat-label {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: 'Space Mono', monospace;
+}
+
+.debug-stat-val {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.debug-stat-val.mono {
+  font-family: 'Space Mono', monospace;
+  font-size: 0.7rem;
+  word-break: break-all;
+}
+
+.debug-stat-val.small { font-size: 0.65rem; }
+.debug-stat-val.ok { color: var(--color-green); }
+.debug-stat-val.err { color: var(--color-hazardous); }
+.debug-stat-val.warn { color: var(--color-interruptions); }
+
+.debug-log-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.debug-log-stream {
+  font-family: 'Space Mono', monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  max-height: calc(100vh - 320px);
+  overflow-y: auto;
+  padding: 12px;
+  background: #0a0f12;
+}
+
+.debug-log-line {
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.debug-log-ts { color: var(--text-muted); flex-shrink: 0; }
+.debug-log-src { color: var(--color-accent); flex-shrink: 0; }
+.debug-log-msg { color: var(--text-primary); flex: 1; }
+.debug-log-extra { color: var(--text-muted); font-size: 0.65rem; }
+.debug-log-error .debug-log-msg { color: var(--color-hazardous); }
+.debug-log-warn .debug-log-msg { color: var(--color-interruptions); }
+.debug-log-debug .debug-log-msg { color: var(--text-muted); }
+
+#view-debug.active {
+  display: flex !important;
+  flex-direction: column;
+}
+
 /* ── Responsive Rules ──────────────────────────────────────────── */
 @media (max-width: 1200px) {
   .dashboard-grid {
@@ -20376,6 +21558,321 @@ body {
 
 
 ========================================================================
+FILE: frontend/video-ingest.js
+========================================================================
+(function(){
+  const store={files:[],urls:[]};
+  let rafId=null;
+  let lastCapture=0;
+  const CAPTURE_INTERVAL_MS=100;
+  let inFlight=false;
+
+  function getApiBase(){
+    return window.API_BASE||'http://localhost:8000';
+  }
+
+  function logDebug(level,source,message,extra){
+    if(typeof window.ravenAppendLog==='function'){
+      window.ravenAppendLog(level,source,message,extra);
+    }
+  }
+
+  function captureAndAnalyze(videoEl,cameraId){
+    if(inFlight||!videoEl||videoEl.paused||videoEl.readyState<2)return;
+    const w=videoEl.videoWidth||640,h=videoEl.videoHeight||480;
+    if(!w||!h)return;
+    const c=document.createElement('canvas');
+    c.width=w;c.height=h;
+    c.getContext('2d').drawImage(videoEl,0,0,w,h);
+    const b64=c.toDataURL('image/jpeg',.82).split(',')[1];
+    inFlight=true;
+    logDebug('DEBUG','VideoIngest',`Frame capture CAM-${String(cameraId).padStart(2,'0')} (${w}x${h})`);
+    fetch(`${getApiBase()}/api/incidents/analyze`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({camera_id:cameraId,image_b64:b64})
+    }).then(r=>r.ok?r.json():null).then(data=>{
+      inFlight=false;
+      if(!data)return;
+      if(data.status==='skipped'){
+        if(typeof window.showToast==='function'){
+          window.showToast('Frame Skipped',data.reason||'No targets detected','info');
+        }
+        logDebug('DEBUG','VideoIngest',data.reason||'Frame skipped by YOLO');
+        return;
+      }
+      if(data.id){
+        if(typeof window.refreshDashboard==='function')window.refreshDashboard();
+        if(typeof window.showToast==='function'){
+          const sev=data.severity||'info';
+          const isCritical=String(sev).toUpperCase()==='CRITICAL';
+          window.showToast(
+            isCritical?'Security Alert':`[${sev}] Threat Detected`,
+            `Incident #${data.id} · CAM-${String(cameraId).padStart(2,'0')} · ${data.threat_type||'Activity'}`,
+            sev,
+            isCritical
+          );
+        }
+        logDebug('INFO','VideoIngest',`Incident #${data.id} created (${data.severity})`);
+      }
+    }).catch(err=>{
+      inFlight=false;
+      logDebug('ERROR','VideoIngest',String(err));
+    });
+  }
+
+  function analyzeLoop(videoEl,cameraId){
+    stopAnalyzeLoop();
+    lastCapture=0;
+    function tick(ts){
+      if(!videoEl||videoEl.paused){
+        rafId=requestAnimationFrame(tick);
+        return;
+      }
+      if(ts-lastCapture>=CAPTURE_INTERVAL_MS){
+        lastCapture=ts;
+        captureAndAnalyze(videoEl,cameraId);
+      }
+      rafId=requestAnimationFrame(tick);
+    }
+    rafId=requestAnimationFrame(tick);
+    setTimeout(()=>captureAndAnalyze(videoEl,cameraId),300);
+  }
+
+  function stopAnalyzeLoop(){
+    if(rafId){cancelAnimationFrame(rafId);rafId=null;}
+    inFlight=false;
+  }
+
+  function bindUpload(inputEl,onLoaded){
+    if(!inputEl)return;
+    inputEl.addEventListener('change',()=>{
+      const file=inputEl.files&&inputEl.files[0];
+      if(!file||!file.type.startsWith('video/'))return;
+      store.urls.forEach(u=>URL.revokeObjectURL(u));
+      const url=URL.createObjectURL(file);
+      store.files.unshift({name:file.name,url,file});
+      store.urls.unshift(url);
+      inputEl.value='';
+      if(onLoaded)onLoaded(url,file.name);
+    });
+  }
+
+  function playOnElement(videoEl,placeholderEl,url,loop=true){
+    if(!videoEl)return null;
+    if(placeholderEl)placeholderEl.style.display='none';
+    videoEl.style.display='block';
+    videoEl.src=url;
+    videoEl.loop=loop;
+    videoEl.muted=true;
+    videoEl.playsInline=true;
+    videoEl.play().catch(()=>{});
+    return videoEl;
+  }
+
+  function playOnCameraFeed(camId,url){
+    const feed=document.getElementById(`feed-cam-${camId}`);
+    if(!feed)return;
+    let vid=feed.parentElement.querySelector('video.cam-stream');
+    if(!vid){
+      vid=document.createElement('video');
+      vid.className='camera-feed cam-stream';
+      vid.id=`vid-cam-${camId}`;
+      vid.playsInline=true;vid.muted=true;vid.loop=true;
+      vid.style.cssText='width:100%;height:100%;object-fit:cover;position:absolute;inset:0;';
+      feed.style.display='none';
+      feed.parentElement.insertBefore(vid,feed);
+    }
+    vid.src=url;vid.play().catch(()=>{});
+    return vid;
+  }
+
+  function setupDashboard(){
+    const upload=document.getElementById('btn-cloud-upload');
+    const play=document.getElementById('btn-cloud-play');
+    const fileIn=document.getElementById('cloud-video-input');
+    const video=document.getElementById('main-cctv-video');
+    const ph=document.getElementById('cctv-placeholder');
+    bindUpload(fileIn,(url)=>{
+      playOnElement(video,ph,url);
+      analyzeLoop(video,1);
+    });
+    if(play)play.addEventListener('click',()=>{
+      if(!store.files.length){alert('Upload a video first.');return;}
+      const v=playOnElement(video,ph,store.files[0].url);
+      analyzeLoop(v,1);
+    });
+    if(upload&&fileIn)upload.addEventListener('click',()=>fileIn.click());
+  }
+
+  function setupCameraGrid(){
+    const upload=document.getElementById('btn-grid-upload');
+    const play=document.getElementById('btn-grid-play');
+    const fileIn=document.getElementById('grid-video-input');
+    bindUpload(fileIn,(url)=>{
+      [1,2,3,4].forEach(id=>playOnCameraFeed(id,url));
+      const v=document.getElementById('vid-cam-1')||document.getElementById('main-cctv-video');
+      if(v)analyzeLoop(v,1);
+    });
+    if(play)play.addEventListener('click',()=>{
+      if(!store.files.length){alert('Upload a video first.');return;}
+      const url=store.files[0].url;
+      [1,2,3,4].forEach(id=>playOnCameraFeed(id,url));
+      const v=document.getElementById('vid-cam-1');
+      if(v)analyzeLoop(v,1);
+    });
+    if(upload&&fileIn)upload.addEventListener('click',()=>fileIn.click());
+  }
+
+  document.addEventListener('DOMContentLoaded',()=>{
+    setupDashboard();
+    setupCameraGrid();
+  });
+
+  window.ravenVideoStore=store;
+  window.ravenStopVideoAnalyze=stopAnalyzeLoop;
+})();
+
+
+========================================================================
+FILE: frontend/voice-agent-visual.js
+========================================================================
+(function(){
+  const canvas=document.getElementById('vaCanvas');
+  if(!canvas)return;
+  const ctx=canvas.getContext('2d');
+  let W,H,cx,cy,t=0,active=false;
+  const particles=[];
+  const RIBBON_L=28,RIBBON_R=28;
+
+  function resize(){
+    const wrap=canvas.parentElement;
+    W=wrap.clientWidth;H=wrap.clientHeight;
+    canvas.width=W;canvas.height=H;
+    cx=W/2;cy=H/2;
+  }
+  window.addEventListener('resize',resize);
+  resize();
+
+  for(let i=0;i<120;i++){
+    const ang=Math.random()*Math.PI*2;
+    const dist=40+Math.random()*90;
+    particles.push({
+      x:Math.cos(ang)*dist,y:Math.sin(ang)*dist,
+      tx:Math.cos(ang)*(120+Math.random()*80),
+      ty:Math.sin(ang)*(120+Math.random()*80),
+      hue:ang>0?320:180,
+      size:.6+Math.random()*1.2,
+      phase:Math.random()*Math.PI*2
+    });
+  }
+
+  function ribbonY(x,side,offset){
+    const amp=active?38:28;
+    const freq=.012;
+    const wave=Math.sin(x*freq+t*2+offset)*amp;
+    const wave2=Math.sin(x*freq*1.7+t*1.3+offset*2)*amp*.35;
+    return cy+wave+wave2+(side==='l'?-8:8);
+  }
+
+  function drawRibbon(side,color){
+    const steps=RIBBON_L+RIBBON_R;
+    const count=side==='l'?RIBBON_L:RIBBON_R;
+    for(let r=0;r<count;r++){
+      ctx.beginPath();
+      const spread=(r-count/2)*2.2;
+      for(let x=0;x<=W;x+=4){
+        const px=side==='l'?x:W-x;
+        const rx=side==='l'?px:W-px;
+        const y=ribbonY(rx,side,spread)+spread;
+        if(x===0)ctx.moveTo(px,y);else ctx.moveTo(px-4,ribbonY(rx-4,side,spread)+spread),ctx.lineTo(px,y);
+      }
+      ctx.strokeStyle=color;
+      ctx.globalAlpha=.08+(r/count)*.12;
+      ctx.lineWidth=.8;
+      ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+
+  function drawNetwork(){
+    particles.forEach((p,i)=>{
+      const pulse=.5+.5*Math.sin(t*2+p.phase);
+      const x=cx+p.x+(p.tx-p.x)*pulse*.15;
+      const y=cy+p.y+(p.ty-p.y)*pulse*.15;
+      const ex=cx+p.tx,ey=cy+p.ty;
+      const grad=ctx.createLinearGradient(x,y,ex,ey);
+      grad.addColorStop(0,`hsla(${p.hue},100%,60%,${.15+.2*pulse})`);
+      grad.addColorStop(1,`hsla(${p.hue},100%,50%,0)`);
+      ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(ex,ey);
+      ctx.strokeStyle=grad;ctx.lineWidth=.6;ctx.stroke();
+      ctx.beginPath();ctx.arc(x,y,p.size,0,Math.PI*2);
+      ctx.fillStyle=`hsla(${p.hue},100%,65%,${.5+.4*pulse})`;
+      ctx.fill();
+      if(i%4===0){
+        particles.forEach((q,j)=>{
+          if(j<=i||j-i>8)return;
+          const dx=x-(cx+q.x),dy=y-(cy+q.y);
+          if(dx*dx+dy*dy>2500)return;
+          ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(cx+q.x,cy+q.y);
+          ctx.strokeStyle=`rgba(255,255,255,${.02+.02*pulse})`;ctx.lineWidth=.3;ctx.stroke();
+        });
+      }
+    });
+  }
+
+  function drawHub(){
+    const r=active?72:68;
+    const glow=ctx.createRadialGradient(cx,cy,r*.3,cx,cy,r*1.8);
+    glow.addColorStop(0,'rgba(0,255,255,.25)');
+    glow.addColorStop(.5,'rgba(180,0,255,.12)');
+    glow.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.beginPath();ctx.arc(cx,cy,r*1.6,0,Math.PI*2);
+    ctx.fillStyle=glow;ctx.fill();
+
+    ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+    ctx.fillStyle='#0a0e18';ctx.fill();
+    ctx.strokeStyle='rgba(0,255,255,.15)';ctx.lineWidth=2;ctx.stroke();
+
+    const micScale=active?1.08:1;
+    ctx.save();ctx.translate(cx,cy);ctx.scale(micScale,micScale);
+    ctx.fillStyle='#00ffff';
+    ctx.shadowColor='#00ffff';ctx.shadowBlur=active?24:14;
+    ctx.beginPath();
+    ctx.moveTo(-8,-10);ctx.lineTo(-8,-18+8);ctx.quadraticCurveTo(-8,-18,0,-18);
+    ctx.quadraticCurveTo(8,-18,8,-10);ctx.lineTo(8,6);ctx.quadraticCurveTo(8,10,0,10);
+    ctx.quadraticCurveTo(-8,10,-8,6);ctx.closePath();ctx.fill();
+    ctx.shadowBlur=0;
+    ctx.strokeStyle='#00ffff';ctx.lineWidth=2;ctx.lineCap='round';
+    ctx.beginPath();ctx.arc(0,4,12,Math.PI,0);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(0,16);ctx.lineTo(0,24);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(-10,24);ctx.lineTo(10,24);ctx.stroke();
+    ctx.restore();
+  }
+
+  function frame(){
+    t+=.016;
+    ctx.fillStyle='#080c14';
+    ctx.fillRect(0,0,W,H);
+    drawRibbon('l','#00ffff');
+    drawRibbon('r','#ff00ff');
+    drawNetwork();
+    drawHub();
+    requestAnimationFrame(frame);
+  }
+
+  window.vaSetVisualActive=function(on){active=!!on;};
+  const orb=document.getElementById('orb2');
+  if(orb){
+    new MutationObserver(()=>{
+      window.vaSetVisualActive(orb.classList.contains('active'));
+    }).observe(orb,{attributes:true,attributeFilter:['class']});
+  }
+  frame();
+})();
+
+
+========================================================================
 FILE: frontend/voice-agent.js
 ========================================================================
 import { Conversation } from 'https://esm.sh/@elevenlabs/client';
@@ -20402,7 +21899,7 @@ if(bChat2)bChat2.onclick=()=>toggleChat2();
 if(cSend2)cSend2.onclick=()=>sendText2();
 if(cIn2)cIn2.addEventListener('keydown',e=>{if(e.key==='Enter')sendText2();});
 
-function setStatus2(t,err=false){if(st2){st2.textContent=t;st2.className='status'+(err?' err':'');}}
+function setStatus2(t,err=false){if(st2){st2.textContent=t;st2.className='va-status'+(err?' err':'');}}
 function setVoiceUI2(on){
   if(orb2)orb2.classList.toggle('active',on);
   if(bCall2)bCall2.style.display=on?'none':'flex';

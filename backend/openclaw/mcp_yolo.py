@@ -13,7 +13,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from backend.openclaw.mcp_helper import MCPServer
-from backend.services.yolo_filter import detect_targets, detections_to_boxes
+from backend.services.yolo_filter import detect_targets, detections_to_boxes, _get_model
+
+# Pre-load YOLO weights once at MCP server startup (persistent model instance)
+_get_model()
 
 server = MCPServer("yolo-filter-mcp")
 

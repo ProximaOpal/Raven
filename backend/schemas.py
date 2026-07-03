@@ -116,6 +116,19 @@ class OperatorCreate(BaseModel):
     password: str
     role: OperatorRole = OperatorRole.SOC
 
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 10:
+            raise ValueError("Password must be at least 10 characters long")
+        if not any(c.isupper() for c in v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not any(c.islower() for c in v):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not any(c.isdigit() for c in v):
+            raise ValueError("Password must contain at least one numeric digit")
+        return v
+
 
 class OperatorOut(BaseModel):
     id: int
@@ -179,6 +192,14 @@ class WSEvent(BaseModel):
 class AnalyzeFrameRequest(BaseModel):
     camera_id: int
     image_b64: str      # base64-encoded JPEG/PNG
+
+    @field_validator("image_b64")
+    @classmethod
+    def validate_image_b64(cls, v: str) -> str:
+        # Limit image upload size to 10MB of base64 characters
+        if len(v) > 10_000_000:
+            raise ValueError("Base64 image data too large (max 10MB)")
+        return v
 
 
 class PipelineStatus(BaseModel):
